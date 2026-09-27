@@ -123,14 +123,45 @@ int ra_fetch_set(const ra_account *account, uint32_t game_id, const char *md5, c
     return ok && *set ? 0 : -1;
 }
 
-int ra_award(const ra_account *account, uint32_t achievement_id, const char *md5,
+int ra_fetch_user_unlocks(const ra_account *account, uint32_t game_id, int hardcore, uint32_t **ids,
+                          uint32_t *count) {
+    *ids = NULL;
+    *count = 0;
+    rc_api_fetch_user_unlocks_request_t params = {0};
+    params.username = account->user;
+    params.api_token = account->token;
+    params.game_id = game_id;
+    params.hardcore = hardcore ? 1 : 0;
+    rc_api_request_t req;
+    if (rc_api_init_fetch_user_unlocks_request(&req, &params) != RC_OK) return -1;
+    https_response res;
+    rc_api_server_response_t sr;
+    if (api_call(&req, &res, &sr)) return -1;
+    rc_api_fetch_user_unlocks_response_t unlocks;
+    int r = rc_api_process_fetch_user_unlocks_server_response(&unlocks, &sr);
+    int ok = r == RC_OK && unlocks.response.succeeded;
+    if (ok && unlocks.num_achievement_ids) {
+        *ids = malloc(unlocks.num_achievement_ids * sizeof(uint32_t));
+        if (*ids) {
+            memcpy(*ids, unlocks.achievement_ids, unlocks.num_achievement_ids * sizeof(uint32_t));
+            *count = unlocks.num_achievement_ids;
+        } else {
+            ok = 0;
+        }
+    }
+    rc_api_destroy_fetch_user_unlocks_response(&unlocks);
+    free(res.body);
+    return ok ? 0 : -1;
+}
+
+int ra_award(const ra_account *account, uint32_t achievement_id, const char *md5, int hardcore,
              uint32_t seconds_since_unlock, char *error, size_t error_size) {
     error[0] = '\0';
     rc_api_award_achievement_request_t params = {0};
     params.username = account->user;
     params.api_token = account->token;
     params.achievement_id = achievement_id;
-    params.hardcore = 0;
+    params.hardcore = hardcore ? 1 : 0;
     params.game_hash = md5;
     params.seconds_since_unlock = seconds_since_unlock;
     rc_api_request_t req;

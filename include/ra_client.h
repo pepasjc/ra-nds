@@ -39,10 +39,16 @@ int ra_resolve_hash(const char *md5, uint32_t *game_id);
 int ra_fetch_set(const ra_account *account, uint32_t game_id, const char *md5, char **set,
                  size_t *length, unsigned *achievements);
 
+// The account's unlocks for a game in one mode: a malloc'd id array.
+// 0 on success.
+int ra_fetch_user_unlocks(const ra_account *account, uint32_t game_id, int hardcore, uint32_t **ids,
+                          uint32_t *count);
+
 enum { RA_AWARD_OK, RA_AWARD_ALREADY, RA_AWARD_REFUSED, RA_AWARD_NETWORK };
 
-// Softcore unlock.  RA_AWARD_REFUSED puts RA's message in error.
-int ra_award(const ra_account *account, uint32_t achievement_id, const char *md5,
+// An unlock (hardcore 0: softcore).  RA_AWARD_REFUSED puts RA's message in
+// error.
+int ra_award(const ra_account *account, uint32_t achievement_id, const char *md5, int hardcore,
              uint32_t seconds_since_unlock, char *error, size_t error_size);
 
 // Ask Unlaunch to boot `path` after the next restart; returning from main()
