@@ -93,21 +93,17 @@ static void write_text(const char *path, const char *text) {
 // Prep: fetch the set of the game about to start
 // ---------------------------------------------------------------------------
 
-// <rom>.id: "<size> <header CRC>" (hex) as nds-bootstrap-ra checks it at
-// every start (ra_boot.cpp romMatchesId), then the ROM's hash.  0 on success.
-static int write_rom_id(const char *rom, const char *id_path, const char *md5) {
-    struct stat st;
-    u16 crc = 0;
-    FILE *f = fopen(rom, "rb");
-    if (!f || stat(rom, &st) != 0) {
-        if (f) fclose(f);
-        return -1;
-    }
-    fseek(f, 0x15E, SEEK_SET);
-    if (fread(&crc, sizeof(crc), 1, f) != 1) crc = 0;
-    fclose(f);
-    char text[96];
-    snprintf(text, sizeof(text), "%lx %04x\n%s\n", (unsigned long)st.st_size, crc, md5);
+// The ROM's fingerprint (size, header CRC, file time) as nds-bootstrap-ra
+// computed it and passed it in prep.txt.  Kept verbatim: the loader's FAT
+// library might render the file time differently from this one.
+static char fingerprint[64];
+
+// <rom>.id: the fingerprint, which the loader checks at every start
+// (ra_boot.cpp romMatchesId), then the ROM's hash.  0 on success.
+static int write_rom_id(const char *id_path, const char *md5) {
+    if (!fingerprint[0]) return -1;
+    char text[128];
+    snprintf(text, sizeof(text), "%s\n%s\n", fingerprint, md5);
     FILE *out = fopen(id_path, "wb");
     if (!out) return -1;
     int ok = fputs(text, out) >= 0;
@@ -139,6 +135,7 @@ static void prep(const ra_account *account, int have_account) {
     if (f) {
         if (fgets(rom, sizeof(rom), f)) rom[strcspn(rom, "\r\n")] = '\0';
         if (fgets(loader, sizeof(loader), f)) loader[strcspn(loader, "\r\n")] = '\0';
+        if (fgets(fingerprint, sizeof(fingerprint), f)) fingerprint[strcspn(fingerprint, "\r\n")] = '\0';
         fclose(f);
     }
     remove(PREP_FILE);
@@ -164,7 +161,7 @@ static void prep(const ra_account *account, int have_account) {
         // nds-bootstrap sent us because the ROM's .id is missing or differs
         if (strcmp(known, md5) == 0) {
             SAY("ROM checked: achievements\nunchanged\n");
-            done = write_rom_id(rom, id_path, md5) == 0;
+            done = write_rom_id(id_path, md5) == 0;
             fetch = 0;
         } else {
             SAY("\x1b[33mA different ROM:\x1b[39m\n was %s\n now %s\n\n", known, md5);
@@ -189,7 +186,7 @@ static void prep(const ra_account *account, int have_account) {
         } else if (game_id == 0) {
             write_text(none_path, md5);
             SAY("No achievements for this ROM\n(hash %s)\n", md5);
-            done = write_rom_id(rom, id_path, md5) == 0;
+            done = write_rom_id(id_path, md5) == 0;
         } else {
             char *set = NULL;
             size_t length = 0;
@@ -202,7 +199,7 @@ static void prep(const ra_account *account, int have_account) {
                     int ok = fwrite(set, 1, length, out) == length;
                     ok = fclose(out) == 0 && ok;
                     remove(set_path);
-                    done = ok && rename(tmp, set_path) == 0 && write_rom_id(rom, id_path, md5) == 0;
+                    done = ok && rename(tmp, set_path) == 0 && write_rom_id(id_path, md5) == 0;
                 }
                 if (done) SAY("\x1b[32m%u achievements\x1b[39m (game %lu)\n", count, (unsigned long)game_id);
                 else SAY("\x1b[31mCan't write the set\x1b[39m\n");
