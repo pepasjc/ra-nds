@@ -1,3 +1,6 @@
 [submodule "external/mbedtls"]
 	path = external/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "external/rcheevos"]
+	path = external/rcheevos
+	url = https://github.com/RetroAchievements/rcheevos.git

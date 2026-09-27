@@ -1,64 +1,45 @@
-// RA Direct, proof of concept: HTTPS from a DSi straight to RetroAchievements.
+// RA Direct, step 2: the DSi talks to RetroAchievements with rcheevos' rc_api.
 //
-// Connects with the console's saved WiFi settings (DSi mode: WPA2 slots 4-6
-// work), opens TLS 1.2 to retroachievements.org with mbedTLS, checks the
-// certificate chain against the roots in certs.c and the DSi's clock, then
-// asks RA for the game id of Tetris DS (USA) by its hash: an unauthenticated
-// call that changes nothing.  Prints how long each step took.
+// Reads the account from sd:/_nds/ra/account.txt (user=..., token=...: the
+// connect token, as the GameSync server keeps it), logs in with the token,
+// then for each set already on the card (sd:/_nds/ra/sets/, fetched through
+// the Pi) looks the game up by hash and downloads its achievements straight
+// from RA.  The set is rendered the way the Pi renders it and written to
+// sd:/_nds/ra/direct_test/, never over the live sets, and compared with the
+// Pi's copy.  Only read-only API calls: nothing is unlocked or changed.
 #include <nds.h>
 #include <dswifi9.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
+#include <fat.h>
+#include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
-#include <unistd.h>
 
-#include "mbedtls/ctr_drbg.h"
-#include "mbedtls/entropy.h"
-#include "mbedtls/error.h"
-#include "mbedtls/ssl.h"
-#include "mbedtls/x509_crt.h"
+#include "https.h"
 
-#define HOST "retroachievements.org"
-#define PATH "/dorequest.php?r=gameid&m=9dbd0337235cd8acf032c0fbfd649d70"
-#define USER_AGENT "RADirectDS/0.1 (Nintendo DSi; proof of concept)"
+#include "rc_api_runtime.h"
+#include "rc_api_user.h"
+#include "rc_consoles.h"
 
-extern const char ra_ca_pem[];
-extern const size_t ra_ca_pem_len;
+#define RA_DIR "sd:/_nds/ra"
+#define SETS_DIR RA_DIR "/sets"
+#define TEST_DIR RA_DIR "/direct_test"
+#define ACCOUNT_FILE RA_DIR "/account.txt"
+#define LOG_FILE TEST_DIR "/log.txt"
 
-// Timers 0+1 cascaded at the bus clock (33.513982 MHz): elapsed time
-static void timer_start(void) {
-    TIMER_CR(0) = 0;
-    TIMER_CR(1) = 0;
-    TIMER_DATA(0) = 0;
-    TIMER_DATA(1) = 0;
-    TIMER_CR(1) = TIMER_ENABLE | TIMER_CASCADE;
-    TIMER_CR(0) = TIMER_ENABLE | TIMER_DIV_1;
-}
+#define USER_AGENT "RADirectDS/0.2 (Nintendo DSi) rcheevos/12.5"
 
-static u32 timer_ms(void) {
-    u32 ticks = (u32)TIMER_DATA(0) | ((u32)TIMER_DATA(1) << 16);
-    return (u32)((u64)ticks * 1000 / 33513982);
-}
+// RA adds fake achievements from this id up ("Warning: Unknown Emulator")
+// for clients it doesn't know; the Pi drops them, so do we.
+#define WARNING_ACHIEVEMENT_ID 101000001
 
-static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
-    int n = send(*(int *)ctx, buf, len, 0);
-    return n < 0 ? MBEDTLS_ERR_SSL_WANT_WRITE : n;
-}
+static char ra_user[64];
+static char ra_token[64];
+static FILE *logf;
 
-static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
-    int n = recv(*(int *)ctx, buf, len, 0);
-    if (n == 0) return MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY;
-    return n < 0 ? MBEDTLS_ERR_SSL_WANT_READ : n;
-}
-
-static void fail(const char *what, int err) {
-    char msg[100];
-    mbedtls_strerror(err, msg, sizeof(msg));
-    iprintf("\x1b[31m%s: -0x%04X\n%s\x1b[39m\n", what, -err, msg);
-}
+#define LOG(...) do { if (logf) { fprintf(logf, __VA_ARGS__); fflush(logf); } } while (0)
 
 static void wait_start(void) {
     iprintf("\nPress START to exit\n");
@@ -69,10 +50,329 @@ static void wait_start(void) {
     }
 }
 
+static char *read_file(const char *path, size_t *len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *data = malloc(n + 1);
+    if (data && fread(data, 1, n, f) != (size_t)n) {
+        free(data);
+        data = NULL;
+    }
+    fclose(f);
+    if (!data) return NULL;
+    data[n] = '\0';
+    if (len) *len = n;
+    return data;
+}
+
+static void trim(char *s) {
+    size_t n = strlen(s);
+    while (n && (s[n - 1] == '\r' || s[n - 1] == '\n' || s[n - 1] == ' ')) s[--n] = '\0';
+}
+
+// account.txt: "user=<name>" and "token=<connect token>" lines
+static int load_account(void) {
+    FILE *f = fopen(ACCOUNT_FILE, "r");
+    if (!f) return -1;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        trim(line);
+        if (!strncmp(line, "user=", 5)) snprintf(ra_user, sizeof(ra_user), "%s", line + 5);
+        else if (!strncmp(line, "token=", 6)) snprintf(ra_token, sizeof(ra_token), "%s", line + 6);
+    }
+    fclose(f);
+    return ra_user[0] && ra_token[0] ? 0 : -1;
+}
+
+// Send an rc_api request; fills the server response for rc_api's parsers.
+static int api_call(rc_api_request_t *req, https_response *res, rc_api_server_response_t *sr) {
+    int r = https_request(req->url, req->post_data, req->content_type, res);
+    rc_api_destroy_request(req);
+    if (r) return -1;
+    sr->body = res->body;
+    sr->body_length = res->length;
+    sr->http_status_code = res->status;
+    return 0;
+}
+
+static int login(void) {
+    rc_api_login_request_t params = {0};
+    params.username = ra_user;
+    params.api_token = ra_token;
+    rc_api_request_t req;
+    if (rc_api_init_login_request(&req, &params) != RC_OK) return -1;
+    https_response res;
+    rc_api_server_response_t sr;
+    if (api_call(&req, &res, &sr)) return -1;
+
+    rc_api_login_response_t login;
+    int r = rc_api_process_login_server_response(&login, &sr);
+    int ok = r == RC_OK && login.response.succeeded;
+    if (ok) {
+        iprintf("Logged in as %s (%lu ms)\n", login.display_name ? login.display_name : login.username,
+                (unsigned long)res.ms);
+        iprintf(" softcore %lu, hardcore %lu pts\n", (unsigned long)login.score_softcore,
+                (unsigned long)login.score);
+        LOG("login ok: %s softcore=%lu hardcore=%lu %ums\n", login.username,
+            (unsigned long)login.score_softcore, (unsigned long)login.score, res.ms);
+    } else {
+        const char *msg = login.response.error_message ? login.response.error_message : rc_error_str(r);
+        iprintf("\x1b[31mLogin failed (HTTP %d):\n %s\x1b[39m\n", res.status, msg);
+        LOG("login failed: HTTP %d %s\n", res.status, msg);
+    }
+    rc_api_destroy_login_response(&login);
+    free(res.body);
+    return ok ? 0 : -1;
+}
+
+static uint32_t resolve_hash(const char *md5, unsigned *ms) {
+    rc_api_resolve_hash_request_t params = {0};
+    params.game_hash = md5;
+    rc_api_request_t req;
+    if (rc_api_init_resolve_hash_request(&req, &params) != RC_OK) return 0;
+    https_response res;
+    rc_api_server_response_t sr;
+    if (api_call(&req, &res, &sr)) return 0;
+    rc_api_resolve_hash_response_t hash;
+    uint32_t id = 0;
+    if (rc_api_process_resolve_hash_server_response(&hash, &sr) == RC_OK && hash.response.succeeded)
+        id = hash.game_id;
+    rc_api_destroy_resolve_hash_response(&hash);
+    free(res.body);
+    *ms = res.ms;
+    return id;
+}
+
+// Growable text
+typedef struct {
+    char *data;
+    size_t len, cap;
+} text_t;
+
+static void text_add(text_t *t, const char *s, size_t n) {
+    if (t->len + n + 1 > t->cap) {
+        size_t cap = t->cap ? t->cap * 2 : 8192;
+        while (cap < t->len + n + 1) cap *= 2;
+        t->data = realloc(t->data, cap);
+        t->cap = cap;
+    }
+    memcpy(t->data + t->len, s, n);
+    t->len += n;
+    t->data[t->len] = '\0';
+}
+
+static void text_str(text_t *t, const char *s) {
+    text_add(t, s, strlen(s));
+}
+
+static void text_num(text_t *t, unsigned long n) {
+    char num[16];
+    text_str(t, (snprintf(num, sizeof(num), "%lu", n), num));
+}
+
+static int is_space(unsigned char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+}
+
+// " ".join(text.split()) as the Pi does: runs of whitespace become one space
+static void text_clean(text_t *t, const char *s) {
+    int words = 0, gap = 0;
+    for (; s && *s; s++) {
+        if (is_space(*s)) {
+            gap = 1;
+            continue;
+        }
+        if (gap && words) text_add(t, " ", 1);
+        gap = 0;
+        words = 1;
+        text_add(t, s, 1);
+    }
+}
+
+// The Pi's render_set(): the set file the nds-bootstrap engine reads
+static void render_set(text_t *t, const rc_api_fetch_game_data_response_t *game, const char *md5,
+                       unsigned *count) {
+    text_str(t, "RASET\t1\ngame\t");
+    text_num(t, game->id);
+    text_str(t, "\t");
+    text_str(t, md5);
+    text_str(t, "\t");
+    text_clean(t, game->title);
+    text_str(t, "\n");
+    *count = 0;
+    for (uint32_t i = 0; i < game->num_achievements; i++) {
+        const rc_api_achievement_definition_t *ach = &game->achievements[i];
+        if (ach->category != RC_ACHIEVEMENT_CATEGORY_CORE || ach->id >= WARNING_ACHIEVEMENT_ID) continue;
+        const char *mem = ach->definition;
+        if (!mem || !mem[0] || strchr(mem, '\t') || strchr(mem, '\n')) continue;
+        text_str(t, "ach\t");
+        text_num(t, ach->id);
+        text_str(t, "\t");
+        text_num(t, ach->points);
+        text_str(t, "\t");
+        text_str(t, mem);
+        text_str(t, "\t");
+        text_clean(t, ach->title);
+        text_str(t, "\t");
+        text_clean(t, ach->description);
+        text_str(t, "\n");
+        (*count)++;
+    }
+}
+
+typedef struct {
+    char name[128];     // set file name
+    char md5[33];
+    uint32_t game_id;
+} set_entry;
+
+// Games from the sets folder, from each file's "game" line
+static set_entry *list_sets(int only_test_games, int *count) {
+    static const uint32_t test_games[] = { 9878, 5522, 1226 };  // Tetris DS, Castlevania DoS, Ouendan
+    DIR *dir = opendir(SETS_DIR);
+    if (!dir) return NULL;
+    int cap = 64, n = 0;
+    set_entry *list = malloc(cap * sizeof(*list));
+    struct dirent *de;
+    while ((de = readdir(dir))) {
+        size_t len = strlen(de->d_name);
+        if (len < 5 || strcasecmp(de->d_name + len - 4, ".txt") || len >= sizeof(list[0].name)) continue;
+        char path[300];
+        snprintf(path, sizeof(path), SETS_DIR "/%s", de->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        char line[256];
+        set_entry e = {0};
+        if (fgets(line, sizeof(line), f) && fgets(line, sizeof(line), f) && !strncmp(line, "game\t", 5)) {
+            char *id = line + 5, *md5 = strchr(id, '\t');
+            if (md5 && strlen(md5 + 1) >= 32) {
+                e.game_id = strtoul(id, NULL, 10);
+                memcpy(e.md5, md5 + 1, 32);
+            }
+        }
+        fclose(f);
+        if (!e.md5[0]) continue;
+        if (only_test_games) {
+            int wanted = 0;
+            for (unsigned i = 0; i < sizeof(test_games) / sizeof(test_games[0]); i++)
+                wanted |= e.game_id == test_games[i];
+            if (!wanted) continue;
+        }
+        strcpy(e.name, de->d_name);
+        if (n == cap) list = realloc(list, (cap *= 2) * sizeof(*list));
+        list[n++] = e;
+    }
+    closedir(dir);
+    *count = n;
+    return list;
+}
+
+// First line that differs, for the log
+static void log_first_difference(const char *a, const char *b) {
+    int line = 1;
+    while (*a && *a == *b) {
+        if (*a == '\n') line++;
+        a++;
+        b++;
+    }
+    while (line > 1 && a[-1] != '\n') a--, b--;
+    LOG("  first difference on line %d\n  pi:     %.160s\n  direct: %.160s\n", line, a, b);
+}
+
+enum { RESULT_SAME, RESULT_DIFF, RESULT_NOHASH, RESULT_FAIL };
+
+static int check_game(const set_entry *e, unsigned *achievements) {
+    unsigned hash_ms = 0;
+    uint32_t id = resolve_hash(e->md5, &hash_ms);
+    LOG("%s\n  md5 %s: set game %lu, RA gameid %lu (%ums)\n", e->name, e->md5,
+        (unsigned long)e->game_id, (unsigned long)id, hash_ms);
+    if (!id) return RESULT_NOHASH;
+
+    rc_api_fetch_game_data_request_t params = {0};
+    params.username = ra_user;
+    params.api_token = ra_token;
+    params.game_id = id;
+    rc_api_request_t req;
+    if (rc_api_init_fetch_game_data_request(&req, &params) != RC_OK) return RESULT_FAIL;
+    https_response res;
+    rc_api_server_response_t sr;
+    if (api_call(&req, &res, &sr)) return RESULT_FAIL;
+
+    rc_api_fetch_game_data_response_t game;
+    int r = rc_api_process_fetch_game_data_server_response(&game, &sr);
+    int result = RESULT_FAIL;
+    if (r == RC_OK && game.response.succeeded) {
+        text_t set = {0};
+        render_set(&set, &game, e->md5, achievements);
+        LOG("  patch: HTTP %d, %u bytes, %ums, %u of %lu achievements\n", res.status,
+            (unsigned)res.length, res.ms, *achievements, (unsigned long)game.num_achievements);
+
+        char path[300];
+        snprintf(path, sizeof(path), TEST_DIR "/%s", e->name);
+        FILE *f = fopen(path, "wb");
+        if (f) {
+            fwrite(set.data, 1, set.len, f);
+            fclose(f);
+        }
+        snprintf(path, sizeof(path), SETS_DIR "/%s", e->name);
+        char *pi = read_file(path, NULL);
+        if (pi && !strcmp(pi, set.data)) {
+            result = RESULT_SAME;
+            LOG("  same as the Pi's set\n");
+        } else {
+            result = RESULT_DIFF;
+            if (pi) log_first_difference(pi, set.data);
+        }
+        free(pi);
+        free(set.data);
+    } else {
+        const char *msg = game.response.error_message ? game.response.error_message : rc_error_str(r);
+        LOG("  patch failed: HTTP %d %s\n", res.status, msg);
+    }
+    rc_api_destroy_fetch_game_data_response(&game);
+    free(res.body);
+    return result;
+}
+
 int main(void) {
     consoleDemoInit();
-    iprintf("RA Direct: HTTPS test\n");
-    iprintf("%s mode\n\n", isDSiMode() ? "DSi" : "DS");
+    iprintf("RA Direct: step 2 (rc_api)\n\n");
+    if (!fatInitDefault()) {
+        iprintf("\x1b[31mNo SD card\x1b[39m\n");
+        wait_start();
+        return 0;
+    }
+    if (load_account()) {
+        iprintf("\x1b[31mNo account in\n " ACCOUNT_FILE "\x1b[39m\n");
+        iprintf("\nuser=<RA user name>\ntoken=<connect token>\n");
+        wait_start();
+        return 0;
+    }
+    mkdir(TEST_DIR, 0777);
+    logf = fopen(LOG_FILE, "w");
+
+    iprintf("A: Tetris, Castlevania, Ouendan\nX: every set on the card\nSTART: exit\n\n");
+    int all = -1;
+    while (pmMainLoop() && all < 0) {
+        swiWaitForVBlank();
+        scanKeys();
+        u32 k = keysDown();
+        if (k & KEY_A) all = 0;
+        if (k & KEY_X) all = 1;
+        if (k & KEY_START) break;
+    }
+    if (all < 0) {
+        if (logf) fclose(logf);
+        return 0;
+    }
+
+    int count = 0;
+    set_entry *sets = list_sets(!all, &count);
+    iprintf("%d sets to check\n", count);
+    LOG("%d sets to check\n", count);
 
     iprintf("WiFi (saved connections)...\n");
     timer_start();
@@ -81,123 +381,44 @@ int main(void) {
         wait_start();
         return 0;
     }
-    iprintf(" up in %lu ms\n", (unsigned long)timer_ms());
-
-    timer_start();
-    struct hostent *he = gethostbyname(HOST);
-    if (!he) {
-        iprintf("\x1b[31mDNS failed for %s\x1b[39m\n", HOST);
+    iprintf(" up in %u ms\n", timer_ms());
+    if (https_init(USER_AGENT) || login()) {
+        https_close();
+        if (logf) fclose(logf);
         wait_start();
         return 0;
     }
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in addr = {0};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(443);
-    addr.sin_addr = *(struct in_addr *)he->h_addr_list[0];
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        iprintf("\x1b[31mTCP connect failed\x1b[39m\n");
-        wait_start();
-        return 0;
-    }
-    iprintf("DNS + TCP: %lu ms\n", (unsigned long)timer_ms());
 
-    mbedtls_entropy_context entropy;
-    mbedtls_ctr_drbg_context drbg;
-    mbedtls_x509_crt ca;
-    mbedtls_ssl_config conf;
-    mbedtls_ssl_context ssl;
-    mbedtls_entropy_init(&entropy);
-    mbedtls_ctr_drbg_init(&drbg);
-    mbedtls_x509_crt_init(&ca);
-    mbedtls_ssl_config_init(&conf);
-    mbedtls_ssl_init(&ssl);
-
-    int r;
-    const char *pers = "ra-direct";
-    if ((r = mbedtls_ctr_drbg_seed(&drbg, mbedtls_entropy_func, &entropy,
-                                   (const unsigned char *)pers, strlen(pers))) != 0) {
-        fail("RNG seed", r);
-        goto done;
-    }
-    if ((r = mbedtls_x509_crt_parse(&ca, (const unsigned char *)ra_ca_pem, ra_ca_pem_len)) != 0) {
-        fail("CA parse", r);
-        goto done;
-    }
-    mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
-                                MBEDTLS_SSL_PRESET_DEFAULT);
-    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
-    mbedtls_ssl_conf_ca_chain(&conf, &ca, NULL);
-    mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg);
-    if ((r = mbedtls_ssl_setup(&ssl, &conf)) != 0 || (r = mbedtls_ssl_set_hostname(&ssl, HOST)) != 0) {
-        fail("TLS setup", r);
-        goto done;
-    }
-    mbedtls_ssl_set_bio(&ssl, &fd, bio_send, bio_recv, NULL);
-
-    time_t now = time(NULL);
-    struct tm *tm = gmtime(&now);
-    iprintf("Clock: %04d-%02d-%02d %02d:%02d\n", tm->tm_year + 1900, tm->tm_mon + 1,
-            tm->tm_mday, tm->tm_hour, tm->tm_min);
-
-    iprintf("TLS handshake...\n");
-    timer_start();
-    while ((r = mbedtls_ssl_handshake(&ssl)) != 0) {
-        if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) {
-            fail("Handshake", r);
-            u32 flags = mbedtls_ssl_get_verify_result(&ssl);
-            if (flags) {
-                char info[256];
-                mbedtls_x509_crt_verify_info(info, sizeof(info), " ", flags);
-                iprintf("%s", info);
-            }
-            goto done;
+    time_t started = time(NULL);
+    int totals[4] = {0};
+    static const char *const labels[] = { "same", "\x1b[33mdiff\x1b[39m", "\x1b[33mno hash\x1b[39m",
+                                          "\x1b[31mfail\x1b[39m" };
+    for (int i = 0; i < count; i++) {
+        unsigned achievements = 0;
+        int result = check_game(&sets[i], &achievements);
+        totals[result]++;
+        iprintf("%3d/%d %5lu %3ua %s\n", i + 1, count, (unsigned long)sets[i].game_id, achievements,
+                labels[result]);
+        scanKeys();
+        if (keysHeld() & KEY_B) {
+            iprintf("Stopped (B)\n");
+            break;
         }
     }
-    iprintf(" done in %lu ms\n", (unsigned long)timer_ms());
-    iprintf(" %s\n", mbedtls_ssl_get_ciphersuite(&ssl));
-    iprintf(" certificate verified\n");
+    https_close();
 
-    char req[256];
-    int len = snprintf(req, sizeof(req),
-                       "GET " PATH " HTTP/1.1\r\nHost: " HOST "\r\nUser-Agent: " USER_AGENT
-                       "\r\nConnection: close\r\n\r\n");
-    timer_start();
-    for (int sent = 0; sent < len;) {
-        r = mbedtls_ssl_write(&ssl, (const unsigned char *)req + sent, len - sent);
-        if (r == MBEDTLS_ERR_SSL_WANT_WRITE || r == MBEDTLS_ERR_SSL_WANT_READ) continue;
-        if (r < 0) {
-            fail("Write", r);
-            goto done;
-        }
-        sent += r;
-    }
-    static char resp[4096];
-    int got = 0;
-    while (got < (int)sizeof(resp) - 1) {
-        r = mbedtls_ssl_read(&ssl, (unsigned char *)resp + got, sizeof(resp) - 1 - got);
-        if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
-        if (r <= 0) break;
-        got += r;
-    }
-    resp[got] = '\0';
-    iprintf("Request: %lu ms, %d bytes\n\n", (unsigned long)timer_ms(), got);
-
-    char *eol = strstr(resp, "\r\n");
-    if (eol) *eol = '\0';
-    iprintf("%s\n", resp);
-    char *body = eol ? strstr(eol + 2, "\r\n\r\n") : NULL;
-    if (body) iprintf("%.200s\n", body + 4);
-
-    mbedtls_ssl_close_notify(&ssl);
-
-done:
-    close(fd);
-    mbedtls_ssl_free(&ssl);
-    mbedtls_ssl_config_free(&conf);
-    mbedtls_x509_crt_free(&ca);
-    mbedtls_ctr_drbg_free(&drbg);
-    mbedtls_entropy_free(&entropy);
+    const https_stats *st = https_get_stats();
+    long seconds = (long)(time(NULL) - started);
+    iprintf("\nsame %d, diff %d, no hash %d,\nfailed %d in %lds\n", totals[0], totals[1], totals[2],
+            totals[3], seconds);
+    iprintf("%u requests, %lu KB\n", st->requests, st->bytes / 1024);
+    iprintf("%u TCP, %u full + %u resumed TLS\n", st->connects, st->handshakes, st->resumed);
+    LOG("\nsame %d, diff %d, no hash %d, failed %d in %lds\n%u requests, %lu bytes, %u connections, "
+        "%u full handshakes, %u resumed\n",
+        totals[0], totals[1], totals[2], totals[3], seconds, st->requests, st->bytes, st->connects,
+        st->handshakes, st->resumed);
+    if (logf) fclose(logf);
+    free(sets);
     wait_start();
     return 0;
 }
