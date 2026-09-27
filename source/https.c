@@ -1,9 +1,14 @@
 // HTTPS client for RetroAchievements on the DSi; see include/https.h.
+#ifdef __NDS__
 #include <nds.h>
 #include <dswifi9.h>
+#else
+// Host build (tests/run_host_step2.sh): same code over POSIX sockets
+#include <time.h>
+#define iprintf printf
+#endif
 #include <netdb.h>
 #include <netinet/in.h>
-#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,9 +24,6 @@
 #include "mbedtls/net_sockets.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
-
-#define CONNECT_TIMEOUT_SECONDS 10
-#define IO_TIMEOUT_SECONDS 20
 
 extern const char ra_ca_pem[];
 extern const size_t ra_ca_pem_len;
@@ -45,6 +47,17 @@ static int rpos, rlen;
 
 static https_stats stats;
 
+// Certificates checked: only a full handshake has any (a resumed session was
+// verified when it was first made)
+static unsigned certs_checked;
+
+static int count_certs(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
+    (void)ctx, (void)crt, (void)depth, (void)flags;
+    certs_checked++;
+    return 0;
+}
+
+#ifdef __NDS__
 // Timers 0+1 cascaded at the bus clock (33.513982 MHz): elapsed time
 void timer_start(void) {
     TIMER_CR(0) = 0;
@@ -59,15 +72,34 @@ unsigned timer_ms(void) {
     u32 ticks = (u32)TIMER_DATA(0) | ((u32)TIMER_DATA(1) << 16);
     return (unsigned)((u64)ticks * 1000 / 33513982);
 }
+#else
+static struct timespec timer_zero;
+
+void timer_start(void) {
+    clock_gettime(CLOCK_MONOTONIC, &timer_zero);
+}
+
+unsigned timer_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (unsigned)((now.tv_sec - timer_zero.tv_sec) * 1000 +
+                      (now.tv_nsec - timer_zero.tv_nsec) / 1000000);
+}
+#endif
 
 static void tls_error(const char *what, int err) {
     char msg[100];
-    mbedtls_strerror(err, msg, sizeof(msg));
+    // mbedtls_strerror only knows the modules built in, and the net module
+    // isn't: name the socket errors bio_send/bio_recv return
+    if (err == MBEDTLS_ERR_NET_CONN_RESET) strcpy(msg, "connection closed");
+    else if (err == MBEDTLS_ERR_NET_RECV_FAILED) strcpy(msg, "receive failed");
+    else if (err == MBEDTLS_ERR_NET_SEND_FAILED) strcpy(msg, "send failed");
+    else mbedtls_strerror(err, msg, sizeof(msg));
     iprintf("\x1b[31m%s: -0x%04X\n%s\x1b[39m\n", what, -err, msg);
 }
 
-// Blocking sockets with SO_RCVTIMEO/SO_SNDTIMEO: a negative result is a
-// timeout or a dropped connection, never "try again".
+// Blocking sockets: a negative result is a dropped connection, never "try
+// again".  (dswifi's sgIP stack ignores SO_RCVTIMEO: setsockopt is a stub.)
 static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
     int n = send(*(int *)ctx, buf, len, 0);
     return n < 0 ? MBEDTLS_ERR_NET_SEND_FAILED : n;
@@ -77,29 +109,6 @@ static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
     int n = recv(*(int *)ctx, buf, len, 0);
     if (n == 0) return MBEDTLS_ERR_NET_CONN_RESET;
     return n < 0 ? MBEDTLS_ERR_NET_RECV_FAILED : n;
-}
-
-// connect() with a timeout: a dead host would otherwise block for minutes.
-// Success is judged by select() + SO_ERROR rather than errno.
-static int connect_with_timeout(int sock, const struct sockaddr *addr, socklen_t len) {
-    int on = 1;
-    ioctl(sock, FIONBIO, &on);
-    int r = connect(sock, addr, len);
-    if (r < 0) {
-        fd_set wfds;
-        FD_ZERO(&wfds);
-        FD_SET(sock, &wfds);
-        struct timeval tv = { CONNECT_TIMEOUT_SECONDS, 0 };
-        r = -1;
-        if (select(sock + 1, NULL, &wfds, NULL, &tv) > 0 && FD_ISSET(sock, &wfds)) {
-            int err = 0;
-            socklen_t err_len = sizeof(err);
-            if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &err_len) == 0 && err == 0) r = 0;
-        }
-    }
-    int off = 0;
-    ioctl(sock, FIONBIO, &off);
-    return r;
 }
 
 int https_init(const char *agent) {
@@ -127,6 +136,7 @@ int https_init(const char *agent) {
     mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
     mbedtls_ssl_conf_ca_chain(&conf, &ca, NULL);
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg);
+    mbedtls_ssl_conf_verify(&conf, count_certs, NULL);
     if ((r = mbedtls_ssl_setup(&ssl, &conf)) != 0) {
         tls_error("TLS setup", r);
         return -1;
@@ -160,14 +170,14 @@ static int https_connect(const char *host) {
         iprintf("\x1b[31mNo socket\x1b[39m\n");
         return -1;
     }
-    struct timeval tv = { IO_TIMEOUT_SECONDS, 0 };
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(443);
     addr.sin_addr = *(struct in_addr *)he->h_addr_list[0];
-    if (connect_with_timeout(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    // Plain blocking connect: sgIP's select() reports a connecting socket
+    // writable at once, so a non-blocking connect "succeeds" before the TCP
+    // handshake is done and TLS then reads a closed stream.
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         iprintf("\x1b[31mTCP connect failed\x1b[39m\n");
         close(fd);
         fd = -1;
@@ -186,11 +196,12 @@ static int https_connect(const char *host) {
     // Offer the last session (one host in practice; the server decides)
     if (have_session) mbedtls_ssl_set_session(&ssl, &saved_session);
 
+    certs_checked = 0;
     while ((r = mbedtls_ssl_handshake(&ssl)) != 0) {
         if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
         tls_error("Handshake", r);
-        u32 flags = mbedtls_ssl_get_verify_result(&ssl);
-        if (flags && flags != (u32)-1) {
+        uint32_t flags = mbedtls_ssl_get_verify_result(&ssl);
+        if (flags && flags != (uint32_t)-1) {
             char info[256];
             mbedtls_x509_crt_verify_info(info, sizeof(info), " ", flags);
             iprintf("%s", info);
@@ -200,14 +211,10 @@ static int https_connect(const char *host) {
         have_session = 0;
         return -1;
     }
-    // A server that resumes echoes the session id we offered; the
-    // certificate was verified when that session was first made.
-    const mbedtls_ssl_session *now = ssl.session;
-    if (have_session && now && now->id_len && now->id_len == saved_session.id_len &&
-        memcmp(now->id, saved_session.id, now->id_len) == 0) {
-        stats.resumed++;
-    } else {
+    if (certs_checked) {
         stats.handshakes++;
+    } else {
+        stats.resumed++;
     }
     mbedtls_ssl_session_free(&saved_session);
     mbedtls_ssl_session_init(&saved_session);

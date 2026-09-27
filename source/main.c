@@ -18,6 +18,7 @@
 #include <time.h>
 
 #include "https.h"
+#include "raset.h"
 
 #include "rc_api_runtime.h"
 #include "rc_api_user.h"
@@ -30,10 +31,6 @@
 #define LOG_FILE TEST_DIR "/log.txt"
 
 #define USER_AGENT "RADirectDS/0.2 (Nintendo DSi) rcheevos/12.5"
-
-// RA adds fake achievements from this id up ("Warning: Unknown Emulator")
-// for clients it doesn't know; the Pi drops them, so do we.
-#define WARNING_ACHIEVEMENT_ID 101000001
 
 static char ra_user[64];
 static char ra_token[64];
@@ -146,83 +143,6 @@ static uint32_t resolve_hash(const char *md5, unsigned *ms) {
     return id;
 }
 
-// Growable text
-typedef struct {
-    char *data;
-    size_t len, cap;
-} text_t;
-
-static void text_add(text_t *t, const char *s, size_t n) {
-    if (t->len + n + 1 > t->cap) {
-        size_t cap = t->cap ? t->cap * 2 : 8192;
-        while (cap < t->len + n + 1) cap *= 2;
-        t->data = realloc(t->data, cap);
-        t->cap = cap;
-    }
-    memcpy(t->data + t->len, s, n);
-    t->len += n;
-    t->data[t->len] = '\0';
-}
-
-static void text_str(text_t *t, const char *s) {
-    text_add(t, s, strlen(s));
-}
-
-static void text_num(text_t *t, unsigned long n) {
-    char num[16];
-    text_str(t, (snprintf(num, sizeof(num), "%lu", n), num));
-}
-
-static int is_space(unsigned char c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
-}
-
-// " ".join(text.split()) as the Pi does: runs of whitespace become one space
-static void text_clean(text_t *t, const char *s) {
-    int words = 0, gap = 0;
-    for (; s && *s; s++) {
-        if (is_space(*s)) {
-            gap = 1;
-            continue;
-        }
-        if (gap && words) text_add(t, " ", 1);
-        gap = 0;
-        words = 1;
-        text_add(t, s, 1);
-    }
-}
-
-// The Pi's render_set(): the set file the nds-bootstrap engine reads
-static void render_set(text_t *t, const rc_api_fetch_game_data_response_t *game, const char *md5,
-                       unsigned *count) {
-    text_str(t, "RASET\t1\ngame\t");
-    text_num(t, game->id);
-    text_str(t, "\t");
-    text_str(t, md5);
-    text_str(t, "\t");
-    text_clean(t, game->title);
-    text_str(t, "\n");
-    *count = 0;
-    for (uint32_t i = 0; i < game->num_achievements; i++) {
-        const rc_api_achievement_definition_t *ach = &game->achievements[i];
-        if (ach->category != RC_ACHIEVEMENT_CATEGORY_CORE || ach->id >= WARNING_ACHIEVEMENT_ID) continue;
-        const char *mem = ach->definition;
-        if (!mem || !mem[0] || strchr(mem, '\t') || strchr(mem, '\n')) continue;
-        text_str(t, "ach\t");
-        text_num(t, ach->id);
-        text_str(t, "\t");
-        text_num(t, ach->points);
-        text_str(t, "\t");
-        text_str(t, mem);
-        text_str(t, "\t");
-        text_clean(t, ach->title);
-        text_str(t, "\t");
-        text_clean(t, ach->description);
-        text_str(t, "\n");
-        (*count)++;
-    }
-}
-
 typedef struct {
     char name[128];     // set file name
     char md5[33];
@@ -305,8 +225,8 @@ static int check_game(const set_entry *e, unsigned *achievements) {
     int r = rc_api_process_fetch_game_data_server_response(&game, &sr);
     int result = RESULT_FAIL;
     if (r == RC_OK && game.response.succeeded) {
-        text_t set = {0};
-        render_set(&set, &game, e->md5, achievements);
+        size_t set_len = 0;
+        char *set = raset_render(&game, e->md5, achievements, &set_len);
         LOG("  patch: HTTP %d, %u bytes, %ums, %u of %lu achievements\n", res.status,
             (unsigned)res.length, res.ms, *achievements, (unsigned long)game.num_achievements);
 
@@ -314,20 +234,20 @@ static int check_game(const set_entry *e, unsigned *achievements) {
         snprintf(path, sizeof(path), TEST_DIR "/%s", e->name);
         FILE *f = fopen(path, "wb");
         if (f) {
-            fwrite(set.data, 1, set.len, f);
+            fwrite(set, 1, set_len, f);
             fclose(f);
         }
         snprintf(path, sizeof(path), SETS_DIR "/%s", e->name);
         char *pi = read_file(path, NULL);
-        if (pi && !strcmp(pi, set.data)) {
+        if (pi && !strcmp(pi, set)) {
             result = RESULT_SAME;
             LOG("  same as the Pi's set\n");
         } else {
             result = RESULT_DIFF;
-            if (pi) log_first_difference(pi, set.data);
+            if (pi) log_first_difference(pi, set);
         }
         free(pi);
-        free(set.data);
+        free(set);
     } else {
         const char *msg = game.response.error_message ? game.response.error_message : rc_error_str(r);
         LOG("  patch failed: HTTP %d %s\n", res.status, msg);
