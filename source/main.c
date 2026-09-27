@@ -38,13 +38,36 @@ static FILE *logf;
 
 #define LOG(...) do { if (logf) { fprintf(logf, __VA_ARGS__); fflush(logf); } } while (0)
 
+// Diagnostics for the end of a run (the screen stopped updating and START
+// was ignored after the last game): each step goes to the log and the screen
+static void trace(const char *step) {
+    iprintf("[%s]\n", step);
+    fflush(stdout);
+    LOG("[%s] IME=%lu IE=%08lx IF=%08lx\n", step, (unsigned long)REG_IME, (unsigned long)REG_IE,
+        (unsigned long)REG_IF);
+}
+
 static void wait_start(void) {
     iprintf("\nPress START to exit\n");
-    while (pmMainLoop()) {
+    fflush(stdout);
+    trace("wait_start");
+    // Only wait for VBlank if its interrupt can arrive; otherwise poll the
+    // START key directly so the app can always be left.
+    if (REG_IME && (REG_IE & IRQ_VBLANK)) {
         swiWaitForVBlank();
-        scanKeys();
-        if (keysDown() & KEY_START) break;
+        trace("vblank ok");
+        while (pmMainLoop()) {
+            swiWaitForVBlank();
+            scanKeys();
+            if (keysDown() & KEY_START) break;
+        }
+    } else {
+        trace("no vblank irq: polling keys");
+        while (REG_KEYINPUT & KEY_START) {}
     }
+    trace("exit");
+    if (logf) fclose(logf);
+    logf = NULL;
 }
 
 static char *read_file(const char *path, size_t *len) {
@@ -325,7 +348,10 @@ int main(void) {
             break;
         }
     }
+    trace("loop done");
+    https_set_trace(trace);
     https_close();
+    trace("after close");
 
     const https_stats *st = https_get_stats();
     long seconds = (long)(time(NULL) - started);
@@ -337,7 +363,7 @@ int main(void) {
         "%u full handshakes, %u resumed\n",
         totals[0], totals[1], totals[2], totals[3], seconds, st->requests, st->bytes, st->connects,
         st->handshakes, st->resumed);
-    if (logf) fclose(logf);
+    fflush(stdout);
     free(sets);
     wait_start();
     return 0;

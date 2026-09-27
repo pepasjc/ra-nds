@@ -6,9 +6,11 @@
 // Host build (tests/run_host_step2.sh): same code over POSIX sockets
 #include <time.h>
 #define iprintf printf
+#define closesocket close
 #endif
 #include <netdb.h>
 #include <netinet/in.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -144,10 +146,23 @@ int https_init(const char *agent) {
     return 0;
 }
 
+static void (*trace_hook)(const char *step);
+
+void https_set_trace(void (*trace)(const char *step)) {
+    trace_hook = trace;
+}
+
+#define TRACE(step) do { if (trace_hook) trace_hook(step); } while (0)
+
+// closesocket(), never close(): sgIP numbers sockets from 1 and close() is
+// newlib's, so close(1) shut stdout and the console went quiet.
 void https_close(void) {
     if (fd >= 0) {
+        TRACE("close_notify");
         mbedtls_ssl_close_notify(&ssl);
-        close(fd);
+        TRACE("close socket");
+        closesocket(fd);
+        TRACE("socket closed");
         fd = -1;
     }
     connected_host[0] = '\0';
@@ -179,7 +194,7 @@ static int https_connect(const char *host) {
     // handshake is done and TLS then reads a closed stream.
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         iprintf("\x1b[31mTCP connect failed\x1b[39m\n");
-        close(fd);
+        closesocket(fd);
         fd = -1;
         return -1;
     }
@@ -206,7 +221,7 @@ static int https_connect(const char *host) {
             mbedtls_x509_crt_verify_info(info, sizeof(info), " ", flags);
             iprintf("%s", info);
         }
-        close(fd);
+        closesocket(fd);
         fd = -1;
         have_session = 0;
         return -1;

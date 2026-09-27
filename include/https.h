@@ -32,6 +32,9 @@ int https_request(const char *url, const char *post_data, const char *content_ty
                   https_response *res);
 
 void https_close(void);
+
+// Optional hook told each step of https_close (diagnostics)
+void https_set_trace(void (*trace)(const char *step));
 const https_stats *https_get_stats(void);
 
 // Elapsed milliseconds from timers 0+1 (wraps after about two minutes)
