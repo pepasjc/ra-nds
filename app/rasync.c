@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #include "https.h"
 #include "nds_hash.h"
@@ -92,6 +93,46 @@ static void write_text(const char *path, const char *text) {
 // Prep: fetch the set of the game about to start
 // ---------------------------------------------------------------------------
 
+// <rom>.id: "<size> <header CRC>" (hex) as nds-bootstrap-ra checks it at
+// every start (ra_boot.cpp romMatchesId), then the ROM's hash.  0 on success.
+static int write_rom_id(const char *rom, const char *id_path, const char *md5) {
+    struct stat st;
+    u16 crc = 0;
+    FILE *f = fopen(rom, "rb");
+    if (!f || stat(rom, &st) != 0) {
+        if (f) fclose(f);
+        return -1;
+    }
+    fseek(f, 0x15E, SEEK_SET);
+    if (fread(&crc, sizeof(crc), 1, f) != 1) crc = 0;
+    fclose(f);
+    char text[96];
+    snprintf(text, sizeof(text), "%lx %04x\n%s\n", (unsigned long)st.st_size, crc, md5);
+    FILE *out = fopen(id_path, "wb");
+    if (!out) return -1;
+    int ok = fputs(text, out) >= 0;
+    return fclose(out) == 0 && ok ? 0 : -1;
+}
+
+// The hash the current set (its "game" line) or .none file was made for
+static int known_hash(const char *set_path, const char *none_path, char out[33]) {
+    char line[256];
+    out[0] = '\0';
+    FILE *f = fopen(set_path, "rb");
+    if (f) {
+        // "RASET\t1", then "game\t<id>\t<md5>\t<title>"
+        if (fgets(line, sizeof(line), f) && fgets(line, sizeof(line), f) && !strncmp(line, "game\t", 5)) {
+            char *md5 = strchr(line + 5, '\t');
+            if (md5 && strlen(md5 + 1) >= 32) memcpy(out, md5 + 1, 32);
+        }
+        fclose(f);
+    } else if (read_line_file(none_path, line, sizeof(line)) == 0 && strlen(line) >= 32) {
+        memcpy(out, line, 32);
+    }
+    out[out[0] ? 32 : 0] = '\0';
+    return out[0] != '\0';
+}
+
 static void prep(const ra_account *account, int have_account) {
     char rom[256] = "", loader[256] = "";
     FILE *f = fopen(PREP_FILE, "rb");
@@ -107,13 +148,38 @@ static void prep(const ra_account *account, int have_account) {
     name = name ? name + 1 : rom;
     SAY("Achievements for\n %.60s\n\n", name);
 
-    // Unless a set (or "none") gets written, the next start plays without
-    int done = 0;
-    char md5[33];
-    if (!have_account) {
-        SAY("No account in\n " RA_ACCOUNT_FILE "\n");
-    } else if (!rom[0] || !nds_hash_file(rom, md5)) {
+    char set_path[320], none_path[320], id_path[320];
+    snprintf(set_path, sizeof(set_path), RA_SETS_DIR "/%s.txt", name);
+    snprintf(none_path, sizeof(none_path), RA_SETS_DIR "/%s.none", name);
+    snprintf(id_path, sizeof(id_path), RA_SETS_DIR "/%s.id", name);
+
+    // Unless a set (or "none") is there for this ROM, the next start plays
+    // without
+    int done = 0, fetch = 1;
+    char md5[33], known[33];
+    if (!rom[0] || !nds_hash_file(rom, md5)) {
         SAY("\x1b[31mCan't read the ROM\x1b[39m\n");
+        fetch = 0;
+    } else if (known_hash(set_path, none_path, known)) {
+        // nds-bootstrap sent us because the ROM's .id is missing or differs
+        if (strcmp(known, md5) == 0) {
+            SAY("ROM checked: achievements\nunchanged\n");
+            done = write_rom_id(rom, id_path, md5) == 0;
+            fetch = 0;
+        } else {
+            SAY("\x1b[33mA different ROM:\x1b[39m\n was %s\n now %s\n\n", known, md5);
+        }
+    }
+    if (fetch && !done) {
+        remove(set_path);
+        remove(none_path);
+        remove(id_path);
+    }
+
+    if (!fetch || done) {
+        // nothing to fetch
+    } else if (!have_account) {
+        SAY("No account in\n " RA_ACCOUNT_FILE "\n");
     } else if (!ra_wifi_connect(3) || https_init(RA_USER_AGENT)) {
         SAY("\x1b[31mNo connection\x1b[39m\n");
     } else {
@@ -121,26 +187,23 @@ static void prep(const ra_account *account, int have_account) {
         if (ra_resolve_hash(md5, &game_id)) {
             SAY("\x1b[31mRetroAchievements didn't answer\x1b[39m\n");
         } else if (game_id == 0) {
-            char path[320];
-            snprintf(path, sizeof(path), RA_SETS_DIR "/%s.none", name);
-            write_text(path, md5);
+            write_text(none_path, md5);
             SAY("No achievements for this ROM\n(hash %s)\n", md5);
-            done = 1;
+            done = write_rom_id(rom, id_path, md5) == 0;
         } else {
             char *set = NULL;
             size_t length = 0;
             unsigned count = 0;
             if (ra_fetch_set(account, game_id, md5, &set, &length, &count) == 0) {
-                char path[320], tmp[330];
-                snprintf(path, sizeof(path), RA_SETS_DIR "/%s.txt", name);
-                snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+                char tmp[330];
+                snprintf(tmp, sizeof(tmp), "%s.tmp", set_path);
                 FILE *out = fopen(tmp, "wb");
-                if (out && fwrite(set, 1, length, out) == length && fclose(out) == 0) {
-                    out = NULL;
-                    remove(path);
-                    done = rename(tmp, path) == 0;
+                if (out) {
+                    int ok = fwrite(set, 1, length, out) == length;
+                    ok = fclose(out) == 0 && ok;
+                    remove(set_path);
+                    done = ok && rename(tmp, set_path) == 0 && write_rom_id(rom, id_path, md5) == 0;
                 }
-                if (out) fclose(out);
                 if (done) SAY("\x1b[32m%u achievements\x1b[39m (game %lu)\n", count, (unsigned long)game_id);
                 else SAY("\x1b[31mCan't write the set\x1b[39m\n");
                 free(set);
