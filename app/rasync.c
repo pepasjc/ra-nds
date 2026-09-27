@@ -431,6 +431,18 @@ int main(void) {
         logf = fopen(SYNC_LOG, "a");
         time_t now = time(NULL);
         if (logf) fprintf(logf, "\n--- %s", ctime(&now));
+        // Diagnostics for a console key: the eMMC CID this app sees (hash only),
+        // to compare with nds-bootstrap's sd:/_nds/ra/debug_cid.txt
+        if (logf) {
+            const vu8 *cid = (const vu8 *)0x02FFD7BC;
+            u32 hash = 2166136261u;
+            int present = 0;
+            for (int i = 0; i < 16; i++) {
+                present |= cid[i] != 0;
+                hash = (hash ^ cid[i]) * 16777619u;
+            }
+            fprintf(logf, "app cid %08lx present=%d\n", (unsigned long)hash, present);
+        }
         ra_account account;
         int have_account = ra_account_load(&account) == 0;
 
