@@ -70,6 +70,39 @@ static void wait_start(void) {
     logf = NULL;
 }
 
+static void wait_frames(int frames) {
+    while (frames-- > 0) swiWaitForVBlank();
+}
+
+// Saved connections (DSi mode: WPA2 slots 4-6).  The first try sometimes
+// fails, so three tries a second or two apart as GameSync does, then A to
+// try again or START to give up.  1 when connected.
+static int wifi_connect(void) {
+    const int attempts = 3;
+    for (;;) {
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            iprintf("WiFi (saved connections) %d/%d\n", attempt, attempts);
+            timer_start();
+            if (Wifi_InitDefault(WFC_CONNECT)) {
+                iprintf(" up in %u ms\n", timer_ms());
+                LOG("wifi up on attempt %d in %ums\n", attempt, timer_ms());
+                return 1;
+            }
+            LOG("wifi attempt %d failed after %ums\n", attempt, timer_ms());
+            if (attempt < attempts) wait_frames(60 * attempt);
+        }
+        iprintf("\x1b[31mNo WiFi connection\x1b[39m\nA: try again  START: exit\n");
+        for (;;) {
+            if (!pmMainLoop()) return 0;
+            swiWaitForVBlank();
+            scanKeys();
+            u32 k = keysDown();
+            if (k & KEY_A) break;
+            if (k & KEY_START) return 0;
+        }
+    }
+}
+
 static char *read_file(const char *path, size_t *len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -317,14 +350,10 @@ int main(void) {
     iprintf("%d sets to check\n", count);
     LOG("%d sets to check\n", count);
 
-    iprintf("WiFi (saved connections)...\n");
-    timer_start();
-    if (!Wifi_InitDefault(WFC_CONNECT)) {
-        iprintf("\x1b[31mNo WiFi connection\x1b[39m\n");
+    if (!wifi_connect()) {
         wait_start();
         return 0;
     }
-    iprintf(" up in %u ms\n", timer_ms());
     if (https_init(USER_AGENT) || login()) {
         https_close();
         if (logf) fclose(logf);
