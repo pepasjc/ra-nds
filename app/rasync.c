@@ -187,7 +187,7 @@ static void prep(const ra_account *account, int have_account) {
     } else {
         uint32_t game_id = 0;
         if (ra_resolve_hash(md5, &game_id)) {
-            SAY("\x1b[31mRetroAchievements didn't answer\x1b[39m\n");
+            SAY("\x1b[31mRetroAchievements didn't answer\x1b[39m\n %.80s\n", https_last_error());
         } else if (game_id == 0) {
             write_text(none_path, md5);
             SAY("No achievements for this ROM\n(hash %s)\n", md5);
@@ -209,6 +209,8 @@ static void prep(const ra_account *account, int have_account) {
                 if (done) SAY("\x1b[32m%u achievements\x1b[39m (game %lu)\n", count, (unsigned long)game_id);
                 else SAY("\x1b[31mCan't write the set\x1b[39m\n");
                 free(set);
+            } else {
+                SAY("\x1b[31mNo set from RetroAchievements\x1b[39m\n %.80s\n", https_last_error());
             }
         }
         https_close();
@@ -394,7 +396,7 @@ static void sync(const ra_account *account, int have_account) {
             char error[96];
             int r = ra_award(account, u.id, u.md5, u.ago, error, sizeof(error));
             if (r == RA_AWARD_NETWORK) {
-                SAY("\x1b[31m%lu: no answer\x1b[39m\n", (unsigned long)u.id);
+                SAY("\x1b[31m%lu: no answer\x1b[39m\n %.80s\n", (unsigned long)u.id, https_last_error());
                 stopped = 1;
                 break;
             }

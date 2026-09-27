@@ -34,6 +34,9 @@ int https_request(const char *url, const char *post_data, const char *content_ty
 
 void https_close(void);
 
+// What the last failure was ("Handshake: -0x0050 connection closed", ...)
+const char *https_last_error(void);
+
 // Optional hook told each step of https_close (diagnostics)
 void https_set_trace(void (*trace)(const char *step));
 const https_stats *https_get_stats(void);

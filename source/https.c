@@ -92,6 +92,21 @@ unsigned timer_ms(void) {
 }
 #endif
 
+// Most recent failure, for the apps' logs
+static char last_error[128];
+
+static void set_error(const char *msg) {
+    snprintf(last_error, sizeof(last_error), "%s", msg);
+}
+
+static void wait_seconds(int seconds) {
+#ifdef __NDS__
+    for (int i = 0; i < 60 * seconds; i++) swiWaitForVBlank();
+#else
+    sleep(seconds);
+#endif
+}
+
 static void tls_error(const char *what, int err) {
     char msg[100];
     // mbedtls_strerror only knows the modules built in, and the net module
@@ -102,6 +117,7 @@ static void tls_error(const char *what, int err) {
     else if (err == MBEDTLS_ERR_SSL_TIMEOUT) strcpy(msg, "no answer (timeout)");
     else mbedtls_strerror(err, msg, sizeof(msg));
     iprintf("\x1b[31m%s: -0x%04X\n%s\x1b[39m\n", what, -err, msg);
+    snprintf(last_error, sizeof(last_error), "%s: -0x%04X %s", what, -err, msg);
 }
 
 // Blocking sockets: a negative result is a dropped connection, never "try
@@ -200,11 +216,13 @@ static int https_connect(const char *host) {
     struct hostent *he = gethostbyname(host);
     if (!he) {
         iprintf("\x1b[31mDNS failed for %s\x1b[39m\n", host);
+        set_error("DNS failed");
         return -1;
     }
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         iprintf("\x1b[31mNo socket\x1b[39m\n");
+        set_error("no socket");
         return -1;
     }
     struct sockaddr_in addr = {0};
@@ -216,6 +234,7 @@ static int https_connect(const char *host) {
     // handshake is done and TLS then reads a closed stream.
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         iprintf("\x1b[31mTCP connect failed\x1b[39m\n");
+        set_error("TCP connect failed");
         closesocket(fd);
         fd = -1;
         return -1;
@@ -430,13 +449,15 @@ int https_request(const char *url, const char *post_data, const char *content_ty
     if (!path) path = "/";
 
     timer_start();
-    for (int attempt = 0; attempt < 2; attempt++) {
-        int reused = fd >= 0 && strcmp(host, connected_host) == 0;
-        if (!reused && https_connect(host)) {
-            if (attempt > 0) return -1;
-            stats.retries++;  // one more try at connecting
-            continue;
+    // Three tries, a second or two apart: right after the WiFi comes up the
+    // first connection sometimes closes mid-handshake
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+            stats.retries++;
+            wait_seconds(attempt);
         }
+        int reused = fd >= 0 && strcmp(host, connected_host) == 0;
+        if (!reused && https_connect(host)) continue;
         int r = exchange(host, path, post_data, content_type, res);
         if (r == 0) {
             res->ms = timer_ms();
@@ -445,14 +466,18 @@ int https_request(const char *url, const char *post_data, const char *content_ty
             return 0;
         }
         https_close();
-        // A closed keep-alive connection or a stall (timeout): retry once on
+        // A closed keep-alive connection or a stall (timeout): try again on
         // a new connection.  Safe: RA's read calls are idempotent, and so is
         // an award (a repeat is refused as already unlocked).
-        stats.retries++;
+        if (!last_error[0]) set_error("no answer from the server");
         iprintf("\x1b[33mRetrying on a new connection\x1b[39m\n");
         free(res->body);
         memset(res, 0, sizeof(*res));
     }
     iprintf("\x1b[31mRequest failed\x1b[39m\n");
     return -1;
+}
+
+const char *https_last_error(void) {
+    return last_error;
 }
