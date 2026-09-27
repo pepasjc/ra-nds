@@ -154,7 +154,11 @@ static void prep(const ra_account *account, int have_account) {
     // without
     int done = 0, fetch = 1;
     char md5[33], known[33];
-    if (!rom[0] || !nds_hash_file(rom, md5)) {
+    // Timed: is hashing cheap enough for nds-bootstrap to do at every start?
+    timer_start();
+    int hashed = rom[0] && nds_hash_file(rom, md5);
+    if (hashed) SAY("Hash %s\n (%u ms)\n\n", md5, timer_ms());
+    if (!hashed) {
         SAY("\x1b[31mCan't read the ROM\x1b[39m\n");
         fetch = 0;
     } else if (known_hash(set_path, none_path, known)) {
