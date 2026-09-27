@@ -27,6 +27,9 @@
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
 
+// Longest wait for the server between two reads
+#define READ_TIMEOUT_MS 15000
+
 extern const char ra_ca_pem[];
 extern const size_t ra_ca_pem_len;
 
@@ -96,6 +99,7 @@ static void tls_error(const char *what, int err) {
     if (err == MBEDTLS_ERR_NET_CONN_RESET) strcpy(msg, "connection closed");
     else if (err == MBEDTLS_ERR_NET_RECV_FAILED) strcpy(msg, "receive failed");
     else if (err == MBEDTLS_ERR_NET_SEND_FAILED) strcpy(msg, "send failed");
+    else if (err == MBEDTLS_ERR_SSL_TIMEOUT) strcpy(msg, "no answer (timeout)");
     else mbedtls_strerror(err, msg, sizeof(msg));
     iprintf("\x1b[31m%s: -0x%04X\n%s\x1b[39m\n", what, -err, msg);
 }
@@ -111,6 +115,23 @@ static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
     int n = recv(*(int *)ctx, buf, len, 0);
     if (n == 0) return MBEDTLS_ERR_NET_CONN_RESET;
     return n < 0 ? MBEDTLS_ERR_NET_RECV_FAILED : n;
+}
+
+// Reads with a deadline: with no socket timeouts, a stalled connection made
+// recv() block for good (a full run froze at game 56).  select() for reading
+// waits for data, then recv() takes it.
+static int bio_recv_timeout(void *ctx, unsigned char *buf, size_t len, uint32_t timeout_ms) {
+    int sock = *(int *)ctx;
+    if (timeout_ms) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(sock, &rfds);
+        struct timeval tv = { timeout_ms / 1000, (timeout_ms % 1000) * 1000 };
+        int n = select(sock + 1, &rfds, NULL, NULL, &tv);
+        if (n == 0) return MBEDTLS_ERR_SSL_TIMEOUT;
+        if (n < 0) return MBEDTLS_ERR_NET_RECV_FAILED;
+    }
+    return bio_recv(ctx, buf, len);
 }
 
 int https_init(const char *agent) {
@@ -139,6 +160,7 @@ int https_init(const char *agent) {
     mbedtls_ssl_conf_ca_chain(&conf, &ca, NULL);
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg);
     mbedtls_ssl_conf_verify(&conf, count_certs, NULL);
+    mbedtls_ssl_conf_read_timeout(&conf, READ_TIMEOUT_MS);
     if ((r = mbedtls_ssl_setup(&ssl, &conf)) != 0) {
         tls_error("TLS setup", r);
         return -1;
@@ -207,7 +229,7 @@ static int https_connect(const char *host) {
         https_close();
         return -1;
     }
-    mbedtls_ssl_set_bio(&ssl, &fd, bio_send, bio_recv, NULL);
+    mbedtls_ssl_set_bio(&ssl, &fd, bio_send, NULL, bio_recv_timeout);
     // Offer the last session (one host in practice; the server decides)
     if (have_session) mbedtls_ssl_set_session(&ssl, &saved_session);
 
@@ -410,7 +432,11 @@ int https_request(const char *url, const char *post_data, const char *content_ty
     timer_start();
     for (int attempt = 0; attempt < 2; attempt++) {
         int reused = fd >= 0 && strcmp(host, connected_host) == 0;
-        if (!reused && https_connect(host)) return -1;
+        if (!reused && https_connect(host)) {
+            if (attempt > 0) return -1;
+            stats.retries++;  // one more try at connecting
+            continue;
+        }
         int r = exchange(host, path, post_data, content_type, res);
         if (r == 0) {
             res->ms = timer_ms();
@@ -419,9 +445,13 @@ int https_request(const char *url, const char *post_data, const char *content_ty
             return 0;
         }
         https_close();
-        // The server may have closed an idle keep-alive connection: retry
-        // once on a new one.  Anything else is a real failure.
-        if (!(r == -1 && reused)) break;
+        // A closed keep-alive connection or a stall (timeout): retry once on
+        // a new connection.  Safe: RA's read calls are idempotent, and so is
+        // an award (a repeat is refused as already unlocked).
+        stats.retries++;
+        iprintf("\x1b[33mRetrying on a new connection\x1b[39m\n");
+        free(res->body);
+        memset(res, 0, sizeof(*res));
     }
     iprintf("\x1b[31mRequest failed\x1b[39m\n");
     return -1;

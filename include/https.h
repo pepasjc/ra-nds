@@ -21,6 +21,7 @@ typedef struct {
     unsigned resumed;      // abbreviated (resumed session) handshakes
     unsigned requests;
     unsigned long bytes;   // response bodies
+    unsigned retries;      // requests sent again on a new connection
 } https_stats;
 
 // Seed the RNG and load the trust anchors.  0 on success.

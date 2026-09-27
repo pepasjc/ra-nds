@@ -16,6 +16,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "https.h"
 #include "raset.h"
@@ -36,7 +37,9 @@ static char ra_user[64];
 static char ra_token[64];
 static FILE *logf;
 
-#define LOG(...) do { if (logf) { fprintf(logf, __VA_ARGS__); fflush(logf); } } while (0)
+// fsync as well: a hung run otherwise leaves an empty file (the size is
+// only written on close)
+#define LOG(...) do { if (logf) { fprintf(logf, __VA_ARGS__); fflush(logf); fsync(fileno(logf)); } } while (0)
 
 // Diagnostics for the end of a run (the screen stopped updating and START
 // was ignored after the last game): each step goes to the log and the screen
@@ -387,11 +390,12 @@ int main(void) {
     iprintf("\nsame %d, diff %d, no hash %d,\nfailed %d in %lds\n", totals[0], totals[1], totals[2],
             totals[3], seconds);
     iprintf("%u requests, %lu KB\n", st->requests, st->bytes / 1024);
-    iprintf("%u TCP, %u full + %u resumed TLS\n", st->connects, st->handshakes, st->resumed);
+    iprintf("%u TCP, %u full + %u resumed TLS\n%u retries\n", st->connects, st->handshakes,
+            st->resumed, st->retries);
     LOG("\nsame %d, diff %d, no hash %d, failed %d in %lds\n%u requests, %lu bytes, %u connections, "
-        "%u full handshakes, %u resumed\n",
+        "%u full handshakes, %u resumed, %u retries\n",
         totals[0], totals[1], totals[2], totals[3], seconds, st->requests, st->bytes, st->connects,
-        st->handshakes, st->resumed);
+        st->handshakes, st->resumed, st->retries);
     fflush(stdout);
     free(sets);
     wait_start();
