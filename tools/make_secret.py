@@ -15,7 +15,7 @@ import pathlib
 import sys
 
 HEADER = """// Build secret for the RetroAchievements console key (tools/make_secret.py).
-// Not in git: nds-bootstrap-ra and ra-direct must be built with the same file.
+// Not in git: nds-bootstrap-ra and ra-nds must be built with the same file.
 #ifndef RA_SECRET_H
 #define RA_SECRET_H
 static const {type} raBuildSecret[32] = {{ {bytes} }};

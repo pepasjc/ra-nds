@@ -52,7 +52,7 @@ int main(int argc, char **argv) {
         printf("RA_USER and RA_TOKEN must be set\n");
         return 2;
     }
-    if (https_init("RADirectDS/0.2 (host test) rcheevos/12.5")) return 1;
+    if (https_init("RA-NDS/0.1 (host test) rcheevos/12.5")) return 1;
 
     rc_api_request_t req;
     https_response res;

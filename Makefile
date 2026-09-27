@@ -1,8 +1,8 @@
 #---------------------------------------------------------------------------------
-# RA Direct: RetroAchievements straight from a DSi.
+# RA-NDS: RetroAchievements straight from a DSi.
 # devkitARM + libnds 2.x/calico (DSi-mode WiFi with WPA2), mbedTLS 2.28 from
 # external/mbedtls built with include/mbedtls_config_ds.h, rcheevos' web API.
-#   make  -> radirect.nds (test: every set on the card against RA)
+#   make  -> ratest.nds (test: every set on the card against RA)
 #            rasync.nds   (RA Sync direct: set prep before a game, unlocks after)
 #---------------------------------------------------------------------------------
 .SUFFIXES:
@@ -13,16 +13,16 @@ endif
 
 include $(DEVKITARM)/ds_rules
 
-APPS		:=	radirect rasync
+APPS		:=	ratest rasync
 BUILD		:=	build
 MBEDTLS		:=	external/mbedtls
 RCHEEVOS	:=	external/rcheevos
 
-radirect.nds: GAME_TITLE := RA Direct
-radirect.nds: GAME_SUBTITLE1 := HTTPS to RetroAchievements
-radirect.nds: GAME_SUBTITLE2 := test: every set on the card
+ratest.nds: GAME_TITLE := RA-NDS test
+ratest.nds: GAME_SUBTITLE1 := HTTPS to RetroAchievements
+ratest.nds: GAME_SUBTITLE2 := test: every set on the card
 rasync.nds: GAME_TITLE := RA Sync
-rasync.nds: GAME_SUBTITLE1 := RetroAchievements, direct
+rasync.nds: GAME_SUBTITLE1 := RetroAchievements for DS
 rasync.nds: GAME_SUBTITLE2 := sets before, unlocks after
 
 ARCH		:=	-march=armv5te -mtune=arm946e-s -mthumb

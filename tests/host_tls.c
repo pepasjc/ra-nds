@@ -39,7 +39,7 @@ int main(void) {
         char info[256]; mbedtls_x509_crt_verify_info(info, sizeof info, " ", mbedtls_ssl_get_verify_result(&ssl)); printf("%s\n", info); return 1;
     }
     printf("handshake ok: %s, verify=%u\n", mbedtls_ssl_get_ciphersuite(&ssl), mbedtls_ssl_get_verify_result(&ssl));
-    const char *req = "GET /dorequest.php?r=gameid&m=9dbd0337235cd8acf032c0fbfd649d70 HTTP/1.1\r\nHost: retroachievements.org\r\nUser-Agent: RADirectDS/0.1 (Nintendo DSi; proof of concept)\r\nConnection: close\r\n\r\n";
+    const char *req = "GET /dorequest.php?r=gameid&m=9dbd0337235cd8acf032c0fbfd649d70 HTTP/1.1\r\nHost: retroachievements.org\r\nUser-Agent: RA-NDS/0.1 (Nintendo DSi; host test)\r\nConnection: close\r\n\r\n";
     mbedtls_ssl_write(&ssl, (const unsigned char *)req, strlen(req));
     static char buf[8192]; int got = 0;
     while ((r = mbedtls_ssl_read(&ssl, (unsigned char *)buf + got, sizeof buf - 1 - got)) > 0) got += r;

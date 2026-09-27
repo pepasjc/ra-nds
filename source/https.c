@@ -163,7 +163,7 @@ int https_init(const char *agent) {
     mbedtls_ssl_session_init(&saved_session);
 
     int r;
-    const char *pers = "ra-direct";
+    const char *pers = "ra-nds";
     if ((r = mbedtls_ctr_drbg_seed(&drbg, mbedtls_entropy_func, &entropy,
                                    (const unsigned char *)pers, strlen(pers))) != 0) {
         tls_error("RNG seed", r);

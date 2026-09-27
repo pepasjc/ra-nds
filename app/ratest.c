@@ -1,4 +1,4 @@
-// RA Direct, step 2: the DSi talks to RetroAchievements with rcheevos' rc_api.
+// RA-NDS test (step 2 of the project): the DSi talks to RetroAchievements with rcheevos' rc_api.
 //
 // Reads the account from sd:/_nds/ra/account.txt (user=..., token=...: the
 // connect token, as the GameSync server keeps it), logs in with the token,
@@ -31,7 +31,7 @@
 #define ACCOUNT_FILE RA_DIR "/account.txt"
 #define LOG_FILE TEST_DIR "/log.txt"
 
-#define USER_AGENT "RADirectDS/0.2 (Nintendo DSi) rcheevos/12.5"
+#define USER_AGENT "RA-NDS/0.1 (Nintendo DSi) rcheevos/12.5"
 
 static char ra_user[64];
 static char ra_token[64];
@@ -318,7 +318,7 @@ static int check_game(const set_entry *e, unsigned *achievements) {
 
 int main(void) {
     consoleDemoInit();
-    iprintf("RA Direct: step 2 (rc_api)\n\n");
+    iprintf("RA-NDS test: every set vs RA\n\n");
     if (!fatInitDefault()) {
         iprintf("\x1b[31mNo SD card\x1b[39m\n");
         wait_start();

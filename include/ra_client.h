@@ -11,7 +11,7 @@
 #define RA_SETS_DIR RA_DIR "/sets"
 #define RA_ACCOUNT_FILE RA_DIR "/account.txt"
 
-#define RA_USER_AGENT "RADirectDS/0.3 (Nintendo DSi) rcheevos/12.5"
+#define RA_USER_AGENT "RA-NDS/0.1 (Nintendo DSi) rcheevos/12.5"
 
 typedef struct {
     char user[64];

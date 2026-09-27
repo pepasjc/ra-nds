@@ -1,4 +1,4 @@
-# RA Direct: RetroAchievements on a real Nintendo DSi
+# RA-NDS: RetroAchievements on a real Nintendo DSi
 
 Earn [RetroAchievements](https://retroachievements.org) in Nintendo DS games on
 a real DSi or DSi XL, with no PC or server in between. The achievements are
@@ -36,8 +36,8 @@ It is two pieces that work together:
 
 ## Install
 
-1. Download `ra-direct-<version>.zip` from
-   [Releases](https://github.com/pepasjc/ra-direct/releases) and unzip it.
+1. Download `ra-nds-<version>.zip` from
+   [Releases](https://github.com/pepasjc/ra-nds/releases) and unzip it.
 2. Copy its `_nds` folder to the root of the DSi's SD card, merging with the
    `_nds` folder there. This replaces TWiLight Menu++'s
    `nds-bootstrap-nightly.nds` and `nds-bootstrap-hb-nightly.nds` with
@@ -113,10 +113,10 @@ You need devkitPro: devkitARM with **libnds 2.x/calico** for this repository,
 and Docker for nds-bootstrap-ra (it builds in the `devkitpro/devkitarm:20241104`
 image, libnds 1.x).
 
-    git clone --recursive https://github.com/pepasjc/ra-direct
+    git clone --recursive https://github.com/pepasjc/ra-nds
     git clone --recursive -b retroachievements https://github.com/pepasjc/nds-bootstrap-ra
-    python ra-direct/tools/make_secret.py nds-bootstrap-ra
-    (cd ra-direct && make)                              # rasync.nds, radirect.nds
+    python ra-nds/tools/make_secret.py nds-bootstrap-ra
+    (cd ra-nds && make)                              # rasync.nds, ratest.nds
     (cd nds-bootstrap-ra && ./docker-build.sh)          # bin/nds-bootstrap-*nightly.nds
 
 `make_secret.py` writes the same random `ra_secret.h` into both trees (it isn't
@@ -125,7 +125,7 @@ every signature on an SD card that used the old one.
 
 The pieces:
 
-- `app/rasync.c`: RA Prep and RA Sync. `app/radirect.c`: a test that fetches
+- `app/rasync.c`: RA Prep and RA Sync. `app/ratest.c`: a test that fetches
   every set on the card straight from RA.
 - `source/https.c`: HTTPS client (mbedTLS 2.28 in `external/mbedtls`, built with
   `include/mbedtls_config_ds.h`; TLS 1.2, certificates checked against
