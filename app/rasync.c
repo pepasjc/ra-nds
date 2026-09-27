@@ -33,6 +33,7 @@
 
 #define PREP_FILE RA_DIR "/prep.txt"
 #define SKIP_FILE RA_DIR "/skip_once.txt"
+#define AFTER_PREP_FILE RA_DIR "/after_prep.txt"
 #define RETURN_FILE RA_DIR "/return.txt"
 #define LOG_FILE RA_DIR "/unlocks.log"
 #define SUBMITTED_FILE RA_DIR "/ra_submitted.txt"
@@ -217,6 +218,10 @@ static void prep(const ra_account *account, int have_account) {
         SAY("Starting without achievements;\nnext start tries again\n");
     }
     pause_frames(90);
+    // The loader started from here can't quit straight to TWiLight Menu++
+    // (the game hangs on its last frame); this tells it to quit through RA
+    // Sync, which returns through Unlaunch
+    if (rom[0]) write_text(AFTER_PREP_FILE, rom);
     SAY("\nStarting the game...\n");
     ra_unlaunch_autoload(loader);
 }
