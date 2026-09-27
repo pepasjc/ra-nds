@@ -543,6 +543,19 @@ int main(void) {
         have_key = ra_key_derive(console_key) == 0;
         ra_account account;
         int have_account = ra_account_load(&account) == 0;
+        // First run: account.txt has the password instead of a token; log in
+        // once and keep only the token RA hands out
+        if (have_account && !account.token[0]) {
+            SAY("Logging in as %s...\n", account.user);
+            if (ra_wifi_connect(3) && https_init(RA_USER_AGENT) == 0 && ra_login_password(&account) == 0
+                && ra_account_save(&account) == 0) {
+                SAY("\x1b[32mLogged in:\x1b[39m token saved,\npassword removed from account.txt\n");
+            } else {
+                SAY("\x1b[31mLogin failed:\x1b[39m check user= and\npassword= in account.txt\n");
+                have_account = 0;
+            }
+            memset(account.password, 0, sizeof(account.password));
+        }
 
         FILE *f = fopen(PREP_FILE, "rb");
         if (f) {

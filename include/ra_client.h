@@ -16,12 +16,21 @@
 typedef struct {
     char user[64];
     char token[64];
+    char password[128]; // only until the first login, then replaced by the token
     int submit;      // "submit=1": send unlocks to RA; otherwise a dry run
 } ra_account;
 
-// account.txt: "user=", "token=" (the connect token) and "submit=" lines.
-// 0 when user and token are there.
+// account.txt: "user=", "token=" (the connect token) and "submit=" lines,
+// or "password=" instead of the token for the first run.  0 when user and
+// token or password are there.
 int ra_account_load(ra_account *account);
+
+// Rewrites account.txt with user, token and submit (no password)
+int ra_account_save(const ra_account *account);
+
+// Logs in with the password and keeps RA's connect token in account; the
+// password is wiped from memory either way.  0 on success.
+int ra_login_password(ra_account *account);
 
 // Saved WiFi connections, a few tries a second or two apart (the first try
 // on a DSi sometimes fails).  1 when connected.

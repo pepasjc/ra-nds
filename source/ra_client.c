@@ -27,18 +27,29 @@ int ra_account_load(ra_account *account) {
         trim(line);
         if (!strncmp(line, "user=", 5)) snprintf(account->user, sizeof(account->user), "%s", line + 5);
         else if (!strncmp(line, "token=", 6)) snprintf(account->token, sizeof(account->token), "%s", line + 6);
+        else if (!strncmp(line, "password=", 9)) snprintf(account->password, sizeof(account->password), "%s", line + 9);
         else if (!strncmp(line, "submit=", 7)) account->submit = atoi(line + 7) != 0;
     }
     fclose(f);
-    return account->user[0] && account->token[0] ? 0 : -1;
+    return account->user[0] && (account->token[0] || account->password[0]) ? 0 : -1;
+}
+
+int ra_account_save(const ra_account *account) {
+    FILE *f = fopen(RA_ACCOUNT_FILE, "w");
+    if (!f) return -1;
+    fprintf(f, "user=%s\ntoken=%s\nsubmit=%d\n", account->user, account->token, account->submit);
+    return fclose(f) == 0 ? 0 : -1;
 }
 
 int ra_wifi_connect(int attempts) {
-    for (int attempt = 1; attempt <= attempts; attempt++) {
+    static int connected;
+    if (connected) return 1;
+    for (int attempt = 1; attempt <= attempts && !connected; attempt++) {
         iprintf("WiFi %d/%d...\n", attempt, attempts);
         timer_start();
         if (Wifi_InitDefault(WFC_CONNECT)) {
             iprintf(" up in %u ms\n", timer_ms());
+            connected = 1;
             return 1;
         }
         for (int i = 0; attempt < attempts && i < 60 * attempt; i++) swiWaitForVBlank();
@@ -79,6 +90,34 @@ int ra_login(const ra_account *account) {
     }
     rc_api_destroy_login_response(&login);
     free(res.body);
+    return ok ? 0 : -1;
+}
+
+int ra_login_password(ra_account *account) {
+    rc_api_login_request_t params = {0};
+    params.username = account->user;
+    params.password = account->password;
+    rc_api_request_t req;
+    int ok = 0;
+    if (rc_api_init_login_request(&req, &params) == RC_OK) {
+        https_response res;
+        rc_api_server_response_t sr;
+        if (api_call(&req, &res, &sr) == 0) {
+            rc_api_login_response_t login;
+            int r = rc_api_process_login_server_response(&login, &sr);
+            ok = r == RC_OK && login.response.succeeded && login.api_token && login.api_token[0];
+            if (ok) {
+                snprintf(account->token, sizeof(account->token), "%s", login.api_token);
+                if (login.username) snprintf(account->user, sizeof(account->user), "%s", login.username);
+            } else {
+                iprintf("\x1b[31mLogin failed: %s\x1b[39m\n",
+                        login.response.error_message ? login.response.error_message : rc_error_str(r));
+            }
+            rc_api_destroy_login_response(&login);
+            free(res.body);
+        }
+    }
+    memset(account->password, 0, sizeof(account->password));
     return ok ? 0 : -1;
 }
 

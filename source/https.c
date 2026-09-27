@@ -151,7 +151,10 @@ static int bio_recv_timeout(void *ctx, unsigned char *buf, size_t len, uint32_t 
 }
 
 int https_init(const char *agent) {
+    static int ready;
     user_agent = agent;
+    if (ready) return 0;
+    ready = 1;
     mbedtls_entropy_init(&entropy);
     mbedtls_ctr_drbg_init(&drbg);
     mbedtls_x509_crt_init(&ca);

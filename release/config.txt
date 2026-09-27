@@ -1,0 +1,12 @@
+# RetroAchievements engine settings (nds-bootstrap-ra), read when a game starts
+#
+# wram=1       run the engine's code from the ARM7's own fast RAM when the game
+#              leaves room (games with DS wireless may not); 0 = main RAM
+# priority=    ARM9 main-memory priority, so the game isn't slowed by the engine:
+#              during = only while achievements are checked
+#              always = from 5 s in, all the time (full speed, may crackle)
+#              off    = never
+# interval=1   check every Nth frame (1 = every frame)
+wram=1
+priority=off
+interval=1
