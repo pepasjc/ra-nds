@@ -13,7 +13,7 @@ endif
 
 include $(DEVKITARM)/ds_rules
 
-APPS		:=	ratest rasync
+APPS		:=	ratest rasync ratool
 BUILD		:=	build
 MBEDTLS		:=	external/mbedtls
 RCHEEVOS	:=	external/rcheevos
@@ -24,6 +24,9 @@ ratest.nds: GAME_SUBTITLE2 := test: every set on the card
 rasync.nds: GAME_TITLE := RA Sync
 rasync.nds: GAME_SUBTITLE1 := RetroAchievements for DS
 rasync.nds: GAME_SUBTITLE2 := sets before, unlocks after
+ratool.nds: GAME_TITLE := RA Tool
+ratool.nds: GAME_SUBTITLE1 := RA-NDS by hand
+ratool.nds: GAME_SUBTITLE2 := prepare sets, send unlocks
 
 ARCH		:=	-march=armv5te -mtune=arm946e-s -mthumb
 
