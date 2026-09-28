@@ -16,8 +16,7 @@ It is two pieces that work together:
   game to fetch its achievement set and after it to send the unlocks.
 
 > **Unofficial client.** This isn't a RetroAchievements-approved emulator.
-> Unlocks are sent as **softcore** only. Hardcore is built in but switched off
-> until RetroAchievements reviews the client.
+> Unlocks are sent as **softcore** only; see [Hardcore](#hardcore) for why.
 
 ## What you need
 
@@ -99,6 +98,33 @@ That's it. Start a game from TWiLight Menu++.
 Unlock records and sets are signed with a key derived from the console's own
 eMMC ID, so records edited on the SD card or copied from another console are
 never sent, and edited sets aren't loaded.
+
+## Hardcore
+
+Most of what RetroAchievements asks of a hardcore client is built, in
+nds-bootstrap-ra:
+
+- no cheats: the cheat engine isn't loaded;
+- no RAM viewer, RAM editor or RAM dump in the in-game menu;
+- no refresh-rate change (no slowing the game down);
+- achievements checked on every frame, never every Nth;
+- a Softcore/Hardcore choice in the in-game menu, where switching to
+  hardcore restarts the game;
+- unlocks recorded with their mode, in signed records, and the two modes
+  tracked apart.
+
+Two requirements can't be met on the DSi, so hardcore is switched off
+(`RA_HARDCORE_AVAILABLE` in nds-bootstrap-ra, `SUBMIT_HARDCORE` in RA Sync):
+
+- **Every frame, guaranteed.** The engine runs on the DSi's ARM7, which
+  also serves the game's card reads and sound. When a frame is too busy, the
+  engine has to skip checks rather than slow the game down, and an achievement
+  that counts frames or compares one frame with the last can then misfire or
+  be missed.
+- **Unlocks sent as they happen.** The game has the WiFi hardware while it
+  runs, so the DSi can't hold a live session with RetroAchievements or send
+  an unlock the moment it happens. Unlocks are kept on the SD card and sent
+  when the game is quit.
 
 ## Troubleshooting
 
