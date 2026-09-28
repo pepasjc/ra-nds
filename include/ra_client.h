@@ -33,8 +33,14 @@ int ra_account_save(const ra_account *account);
 int ra_login_password(ra_account *account);
 
 // Saved WiFi connections, a few tries a second or two apart (the first try
-// on a DSi sometimes fails).  1 when connected.
+// on a DSi sometimes fails), on a thread with a deadline: B skips, and a
+// hung WiFi driver can't freeze the app.  1 when connected.  Only the first
+// call tries; later ones report that result.
+#define RA_WIFI_TIMEOUT_SECONDS 30
 int ra_wifi_connect(int attempts);
+
+// The WiFi driver is still stuck in its bring-up (connect gave up on it)
+int ra_wifi_hung(void);
 
 // Logs in with the token: checks it and prints the user's score.  0 on success.
 int ra_login(const ra_account *account);

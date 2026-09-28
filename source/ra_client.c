@@ -41,20 +41,67 @@ int ra_account_save(const ra_account *account) {
     return fclose(f) == 0 ? 0 : -1;
 }
 
-int ra_wifi_connect(int attempts) {
-    static int connected;
-    if (connected) return 1;
-    for (int attempt = 1; attempt <= attempts && !connected; attempt++) {
-        iprintf("WiFi %d/%d...\n", attempt, attempts);
-        timer_start();
+// The WiFi bring-up runs on its own thread so that it can't take the app
+// down with it: after nds-bootstrap's restart the DSi's WiFi sometimes
+// hangs in Wifi_InitDefault() for good (a game with DS wireless may leave
+// the chip in its DS mode; a power cycle cures it).  The main thread gives
+// up after a deadline instead.
+static volatile int wifi_state;        // 0 trying, 1 up, -1 failed
+static volatile int wifi_attempt;
+static int wifi_attempts;
+static Thread wifi_thread;
+static u8 wifi_stack[16 * 1024] __attribute__((aligned(8)));
+
+static int wifi_worker(void *arg) {
+    (void)arg;
+    for (int attempt = 1; attempt <= wifi_attempts; attempt++) {
+        wifi_attempt = attempt;
         if (Wifi_InitDefault(WFC_CONNECT)) {
-            iprintf(" up in %u ms\n", timer_ms());
-            connected = 1;
-            return 1;
+            wifi_state = 1;
+            return 0;
         }
-        for (int i = 0; attempt < attempts && i < 60 * attempt; i++) swiWaitForVBlank();
+        for (int i = 0; attempt < wifi_attempts && i < 60 * attempt; i++) threadWaitForVBlank();
     }
+    wifi_state = -1;
     return 0;
+}
+
+int ra_wifi_connect(int attempts) {
+    static int started;
+    if (started) return wifi_state == 1;  // one try per run: a hung driver stays hung
+    started = 1;
+    wifi_attempts = attempts;
+    wifi_state = 0;
+    threadPrepare(&wifi_thread, wifi_worker, NULL, &wifi_stack[sizeof(wifi_stack)], MAIN_THREAD_PRIO + 1);
+    threadStart(&wifi_thread);
+
+    // Deadline: three tries take ~15 s when the network is just missing
+    const int frames = 60 * RA_WIFI_TIMEOUT_SECONDS;
+    int shown = -1, last_attempt = 0;
+    for (int frame = 0; frame < frames && wifi_state == 0; frame++) {
+        swiWaitForVBlank();
+        if (wifi_attempt != last_attempt) {
+            last_attempt = wifi_attempt;
+            iprintf("WiFi %d/%d...\n", last_attempt, attempts);
+        }
+        int left = (frames - frame) / 60;
+        if (left != shown && left % 5 == 0) {
+            shown = left;
+            iprintf(" (%ds, B: skip)\n", left);
+        }
+        scanKeys();
+        if (keysDown() & KEY_B) break;
+    }
+    if (wifi_state == 1) {
+        iprintf(" WiFi up\n");
+        return 1;
+    }
+    if (wifi_state == 0) iprintf("\x1b[33mWiFi didn't come up\x1b[39m\n");
+    return 0;
+}
+
+int ra_wifi_hung(void) {
+    return wifi_state == 0 && threadIsValid(&wifi_thread) && !threadIsFinished(&wifi_thread);
 }
 
 // Send an rc_api request; fills the server response for rc_api's parsers.

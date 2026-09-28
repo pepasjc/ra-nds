@@ -71,7 +71,13 @@ That's it. Start a game from TWiLight Menu++.
   unlocked.
 - **Quitting** through the nds-bootstrap in-game menu: the console restarts
   into *RA Sync*, which sends the new unlocks to your profile and goes back to
-  TWiLight Menu++. Without WiFi they stay on the SD card and go next time.
+  TWiLight Menu++. Without WiFi they stay on the SD card and go next time (RA
+  Prep also sends any that are waiting when it's online for a new game).
+- **WiFi**: RA Prep and RA Sync give the connection 30 seconds (**B** skips).
+  If the DSi's WiFi hangs while starting up, which can happen after a game
+  that used DS wireless, the console restarts once and tries again; if it
+  still won't connect, the game starts without achievements (RA Prep) or the
+  unlocks wait for next time (RA Sync).
 - The in-game menu hides nothing in softcore; cheats work as usual.
 
 ## Files on the SD card
@@ -96,8 +102,9 @@ never sent, and edited sets aren't loaded.
 
 ## Troubleshooting
 
-- **"No WiFi connection"**: check the connection in the DSi's System Settings;
-  RA Sync retries three times. WPA2 needs connections 4-6.
+- **"No connection" / "WiFi didn't come up"**: check the connection in the
+  DSi's System Settings (WPA2 needs connections 4-6). If it keeps failing
+  right after a game, turning the DSi off and on again resets the WiFi chip.
 - **A game never gets achievements**: its dump probably isn't one RA
   recognises. Delete `_nds/ra/sets/<rom>.none` after replacing the ROM (or just
   replace it: a changed ROM is checked again automatically).

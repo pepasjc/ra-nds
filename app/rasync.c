@@ -111,6 +111,27 @@ static void write_text(const char *path, const char *text) {
     fclose(f);
 }
 
+// A WiFi driver stuck in its bring-up stays stuck until the console
+// restarts (ra_client.c).  So restart once into the same step (this app, as
+// raprep.nds or rasync.nds) and try again; wifi_retry.txt marks the second
+// run, which then gives up like any failed connection.
+#define WIFI_RETRY_FILE RA_DIR "/wifi_retry.txt"
+#define PREP_PATH RA_DIR "/raprep.nds"
+#define SYNC_PATH RA_DIR "/rasync.nds"
+static int wifi_retried;
+
+static void restart_if_wifi_hung(const char *self, const char *prep_text) {
+    if (wifi_retried || !ra_wifi_hung()) return;
+    write_text(WIFI_RETRY_FILE, "1");
+    if (prep_text) write_text(PREP_FILE, prep_text);  // prep() removed it; the retry needs it
+    SAY("WiFi is stuck: restarting to\ntry once more\n");
+    if (logf) fclose(logf);
+    logf = NULL;
+    pause_frames(60);
+    ra_unlaunch_autoload(self);
+    exit(0);  // in DSi mode calico restarts the console; Unlaunch boots self
+}
+
 static char *read_all(const char *path, size_t *length) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -233,6 +254,9 @@ static int known_hash(const char *set_path, const char *none_path, char out[33],
     return out[0] != '\0';
 }
 
+static int move_ring(void);
+static void send_unlocks(const ra_account *account);
+
 static void prep(const ra_account *account, int have_account) {
     char rom[256] = "", loader[256] = "";
     FILE *f = fopen(PREP_FILE, "rb");
@@ -295,6 +319,9 @@ static void prep(const ra_account *account, int have_account) {
     } else if (!have_account) {
         SAY("No account in\n " RA_ACCOUNT_FILE "\n");
     } else if (!ra_wifi_connect(3) || https_init(RA_USER_AGENT)) {
+        char again[600];
+        snprintf(again, sizeof(again), "%s\n%s\n%s\n", rom, loader, fingerprint);
+        restart_if_wifi_hung(PREP_PATH, again);
         SAY("\x1b[31mNo connection\x1b[39m\n");
     } else {
         uint32_t game_id = 0;
@@ -329,6 +356,13 @@ static void prep(const ra_account *account, int have_account) {
             } else {
                 SAY("\x1b[31mNo set from RetroAchievements\x1b[39m\n %.80s\n", https_last_error());
             }
+        }
+        // Online anyway: send whatever unlocks are still waiting (usually
+        // RA Sync does on quit)
+        if (account->submit) {
+            int moved = move_ring();
+            if (moved) SAY("%d unlock%s from the last game\n", moved, moved == 1 ? "" : "s");
+            send_unlocks(account);
         }
         https_close();
     }
@@ -436,50 +470,34 @@ static uint32_t seconds_ago(const RaUnlockRecord *r, time_t now) {
     return ago < 0 ? 0 : ago > 0x7FFFFFFF ? 0x7FFFFFFF : (uint32_t)ago;
 }
 
-static void sync(const ra_account *account, int have_account, const char *played_rom) {
-    int moved = move_ring();
-    if (moved) SAY("%d new unlock%s from the game\n", moved, moved == 1 ? "" : "s");
-
+// Unlocks in unlocks.bin not sent yet; the first record's MAC (hex) in
+// first_mac, for ra_submitted.txt
+static long pending_unlocks(char first_mac[65], long *sent_before) {
+    first_mac[0] = '\0';
+    *sent_before = 0;
     FILE *bin = fopen(UNLOCKS_FILE, "rb");
-    if (!bin) {
-        SAY("No unlocks yet\n");
-        return;
-    }
+    if (!bin) return 0;
     fseek(bin, 0, SEEK_END);
     long records = ftell(bin) / (long)sizeof(RaSignedUnlock);
     RaSignedUnlock first;
-    char first_mac[65] = "";
     fseek(bin, 0, SEEK_SET);
     if (records && fread(&first, sizeof(first), 1, bin) == 1) {
         for (int i = 0; i < 32; i++) snprintf(first_mac + i * 2, 3, "%02x", first.mac[i]);
     }
-    long sent_before = load_sent(first_mac, records);
-    long pending = records - sent_before;
-    if (pending <= 0) {
-        fclose(bin);
-        SAY("Nothing new to send\n");
-        return;
-    }
-    SAY("%ld unlock%s to send\n", pending, pending == 1 ? "" : "s");
-    if (!have_account) {
-        fclose(bin);
-        SAY("No account in\n " RA_ACCOUNT_FILE "\n");
-        return;
-    }
-    if (!account->submit) {
-        fclose(bin);
-        SAY("Dry run (submit=1 in account.txt\nsends them): kept for later\n");
-        return;
-    }
-    if (!ra_wifi_connect(3) || https_init(RA_USER_AGENT)) {
-        fclose(bin);
-        SAY("\x1b[31mNo connection:\x1b[39m kept for next time\n");
-        return;
-    }
+    fclose(bin);
+    *sent_before = load_sent(first_mac, records);
+    return records - *sent_before;
+}
 
+// Sends the pending unlocks; RetroAchievements must be reachable
+static void send_unlocks(const ra_account *account) {
+    char first_mac[65];
+    long done;
+    if (pending_unlocks(first_mac, &done) <= 0) return;
+    FILE *bin = fopen(UNLOCKS_FILE, "rb");
+    if (!bin) return;
     time_t now = time(NULL);
     int sent = 0, already = 0, refused = 0, forged = 0, stopped = 0;
-    long done = sent_before;
     RaSignedUnlock u;
     fseek(bin, done * (long)sizeof(RaSignedUnlock), SEEK_SET);
     while (fread(&u, sizeof(u), 1, bin) == 1) {
@@ -491,8 +509,8 @@ static void sync(const ra_account *account, int have_account, const char *played
             char md5[33], error[96];
             memcpy(md5, r->md5, 32);
             md5[32] = '\0';
-            int hardcore = SUBMIT_HARDCORE && (r->rtc[7] & 1);
-            int result = ra_award(account, r->achievement_id, md5, hardcore, seconds_ago(r, now), error, sizeof(error));
+            const int hardcore = SUBMIT_HARDCORE && (r->rtc[7] & 1);
+            const int result = ra_award(account, r->achievement_id, md5, hardcore, seconds_ago(r, now), error, sizeof(error));
             if (result == RA_AWARD_NETWORK) {
                 SAY("\x1b[31m%lu: no answer\x1b[39m\n %.80s\n", (unsigned long)r->achievement_id, https_last_error());
                 stopped = 1;
@@ -516,6 +534,34 @@ static void sync(const ra_account *account, int have_account, const char *played
     SAY("\nSent %d, already %d, refused %d\n", sent, already, refused);
     if (forged) SAY("%d with a bad signature skipped\n", forged);
     if (stopped) SAY("The rest goes next time\n");
+}
+
+static void sync(const ra_account *account, int have_account, const char *played_rom) {
+    int moved = move_ring();
+    if (moved) SAY("%d new unlock%s from the game\n", moved, moved == 1 ? "" : "s");
+
+    char first_mac[65];
+    long sent_before;
+    long pending = pending_unlocks(first_mac, &sent_before);
+    if (pending <= 0) {
+        SAY("Nothing new to send\n");
+        return;
+    }
+    SAY("%ld unlock%s to send\n", pending, pending == 1 ? "" : "s");
+    if (!have_account) {
+        SAY("No account in\n " RA_ACCOUNT_FILE "\n");
+        return;
+    }
+    if (!account->submit) {
+        SAY("Dry run (submit=1 in account.txt\nsends them): kept for later\n");
+        return;
+    }
+    if (!ra_wifi_connect(3) || https_init(RA_USER_AGENT)) {
+        restart_if_wifi_hung(SYNC_PATH, NULL);
+        SAY("\x1b[31mNo connection:\x1b[39m kept for next time\n");
+        return;
+    }
+    send_unlocks(account);
 
     // The account's unlocks for the game just played, for the next start
     if (played_rom[0]) {
@@ -541,6 +587,8 @@ int main(void) {
         time_t now = time(NULL);
         if (logf) fprintf(logf, "\n--- %s", ctime(&now));
         have_key = ra_key_derive(console_key) == 0;
+        wifi_retried = remove(WIFI_RETRY_FILE) == 0;  // this run is the restart-retry
+        if (wifi_retried) SAY("(restarted after a stuck WiFi)\n");
         ra_account account;
         int have_account = ra_account_load(&account) == 0;
         // First run: account.txt has the password instead of a token; log in
@@ -551,6 +599,9 @@ int main(void) {
                 && ra_account_save(&account) == 0) {
                 SAY("\x1b[32mLogged in:\x1b[39m token saved,\npassword removed from account.txt\n");
             } else {
+                FILE *p = fopen(PREP_FILE, "rb");
+                if (p) fclose(p);
+                restart_if_wifi_hung(p ? PREP_PATH : SYNC_PATH, NULL);
                 SAY("\x1b[31mLogin failed:\x1b[39m check user= and\npassword= in account.txt\n");
                 have_account = 0;
             }
