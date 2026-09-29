@@ -123,8 +123,8 @@ static void prep(const ra_account *account, int have_account) {
     pause_frames(90);
     // The loader started from here can't quit straight to TWiLight Menu++
     // (the game hangs on its last frame); this tells it to quit through RA
-    // Sync, which returns through Unlaunch
-    if (rom[0]) ra_write_text(AFTER_PREP_FILE, rom);
+    // Sync, which returns through Unlaunch (DSi only)
+    if (rom[0] && !on_3ds) ra_write_text(AFTER_PREP_FILE, rom);
     SAY("\nStarting the game...\n");
     if (on_3ds) ra_twl_autorun(rom, 1);  // TWiLight Menu++ starts it through nds-bootstrap
     handoff(loader);
