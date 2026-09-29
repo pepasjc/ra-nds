@@ -27,7 +27,7 @@ INCLUDE		:=	-I. -I$(ARM7)/source -I$(ARM7)/calico/include -I$(ARM7)/sgIP -I$(ARM
 
 ARCH		:=	-mcpu=arm7tdmi -mtune=arm7tdmi -mthumb-interwork
 CFLAGS		:=	-g -Wall -Os -std=gnu11 -fomit-frame-pointer -ffunction-sections -fdata-sections \
-			$(ARCH) $(INCLUDE) -DARM7 -D__NDS__ -DRANET -DRANET_BLOB -DTWLWIFI_DEBUG -DAR6K_DEBUG \
+			$(ARCH) $(INCLUDE) -DARM7 -D__NDS__ -DRANET -DRANET_BLOB \
 			'-DMBEDTLS_CONFIG_FILE="mbedtls_config_arm7.h"' \
 			-Wno-unused-function -Wno-address-of-packed-member
 ASFLAGS		:=	-g $(ARCH) $(INCLUDE) -DARM7 -D__NDS__ -x assembler-with-cpp

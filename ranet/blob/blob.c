@@ -348,15 +348,17 @@ static void blobPoll(void)
 	// game's ARM7 threads may switch in the middle).
 	static bool inPoll;
 	if (inPoll || (coopCpsr() & 0x1F) != 0x1F) return;
+	// Connected with nothing to do: once a frame is plenty (the card engine
+	// may call several times a frame, and each run fetches our code from
+	// the main memory the game's ARM9 needs)
+	static u32 lastRun;
+	const u32 now = ranetHostTicks();
+	const bool idle = s_session == SESSION_ON && !s_busy && s_sending == s_queued
+		&& ranetGetState() == RanetState_Online;
+	if (idle && now - lastRun < 8753) return; // one frame
+	lastRun = now;
 	inPoll = true;
 	sessionPoll();
-	// Debug: a sign of life every 2 s while WiFi is on
-	static u32 lastBeat;
-	if (s_session != SESSION_OFF && ranetHostTicks() - lastBeat > 2u * 523656u) {
-		lastBeat = ranetHostTicks();
-		dietPrint("[blob] alive, state %d, %lu/%lu sent\n", (int)ranetGetState(),
-			(unsigned long)s_sending, (unsigned long)s_queued);
-	}
 	inPoll = false;
 }
 

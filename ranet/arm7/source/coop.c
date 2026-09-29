@@ -12,7 +12,7 @@
 #include <calico/system/dietprint.h>
 #include "coop.h"
 
-typedef enum { CoFree, CoReady, CoSleep, CoBlocked, CoWaiting, CoDone } CoState;
+typedef enum { CoFree, CoReady, CoSleep, CoBlocked, CoWaiting, CoDone, CoMailbox } CoState;
 
 typedef struct Co {
 	Thread* t;
@@ -23,6 +23,7 @@ typedef struct Co {
 	ThrListNode* queue;    // CoBlocked: queue and token
 	u32 token;
 	vu32 unblocked;
+	Mailbox* mbox;         // CoMailbox: runnable once it has a message
 	u64 wake;              // CoSleep: tick
 	int rc;
 } Co;
@@ -202,10 +203,17 @@ bool mailboxTryRecv(Mailbox* mb, u32* out)
 	return true;
 }
 
+// Waits without running: coopRun() only resumes the thread once the
+// mailbox has a message (the driver's threads sit here while idle)
 u32 mailboxRecv(Mailbox* mb)
 {
 	u32 msg;
-	while (!mailboxTryRecv(mb, &msg)) threadYield();
+	while (!mailboxTryRecv(mb, &msg)) {
+		if (!s_cur) continue;
+		s_cur->mbox = mb;
+		s_cur->state = CoMailbox;
+		coYield();
+	}
 	return msg;
 }
 
@@ -242,7 +250,8 @@ unsigned coopRun(void)
 			Co* c = &s_co[i];
 			bool go = c->state == CoReady
 				|| (c->state == CoSleep && now >= c->wake)
-				|| (c->state == CoBlocked && c->unblocked);
+				|| (c->state == CoBlocked && c->unblocked)
+				|| (c->state == CoMailbox && c->mbox->pending_slots);
 			if (!go) continue;
 			c->state = CoReady;
 			s_cur = c;
