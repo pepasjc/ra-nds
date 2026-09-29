@@ -28,6 +28,7 @@
 #include "https.h"
 #include "ra_client.h"
 #include "ra_sync.h"
+#include "ra_twl.h"
 
 #define PREP_FILE RA_DIR "/prep.txt"
 #define SKIP_FILE RA_DIR "/skip_once.txt"
@@ -54,6 +55,21 @@ static int wifi_retried;
 static const char *retry_self;      // where the retry restarts into
 static char retry_prep_text[600];   // prep.txt for it (prep removed the file)
 
+// On a 3DS (nds-bootstrap-ra marks prep.txt / return.txt with "3ds"): no
+// Unlaunch, so the next program is started by TWiLight Menu++'s autorun and
+// the console restarts into TWiLight Menu++ (ra_twl.c)
+static int on_3ds;
+
+// Restart into path next: through Unlaunch on a DSi, through TWiLight
+// Menu++ (whose autorun setting says what runs) on a 3DS
+static void handoff(const char *path) {
+    if (on_3ds) {
+        if (ra_twl_reboot_target()) SAY("\x1b[31mNo TWiLight Menu++ title id\x1b[39m\n");
+    } else {
+        ra_unlaunch_autoload(path);
+    }
+}
+
 static void restart_if_wifi_hung(void) {
     if (wifi_retried || !ra_wifi_hung() || !retry_self) return;
     ra_write_text(WIFI_RETRY_FILE, "1");
@@ -62,8 +78,8 @@ static void restart_if_wifi_hung(void) {
     if (ra_logf) fclose(ra_logf);
     ra_logf = NULL;
     pause_frames(60);
-    ra_unlaunch_autoload(retry_self);
-    exit(0);  // in DSi mode calico restarts the console; Unlaunch boots self
+    handoff(retry_self);  // on a 3DS TWiLight Menu++'s autorun still points here
+    exit(0);  // calico restarts the console
 }
 
 static int go_online(void) {
@@ -84,7 +100,8 @@ static void prep(const ra_account *account, int have_account) {
     ra_read_line(PREP_FILE, 2, fingerprint, sizeof(fingerprint));
     remove(PREP_FILE);
     if (!loader[0]) snprintf(loader, sizeof(loader), "%s", DEFAULT_LOADER);
-    snprintf(retry_prep_text, sizeof(retry_prep_text), "%s\n%s\n%s\n", rom, loader, fingerprint);
+    snprintf(retry_prep_text, sizeof(retry_prep_text), "%s\n%s\n%s\n%s\n", rom, loader, fingerprint,
+             on_3ds ? "3ds" : "");
     retry_self = PREP_PATH;
 
     const char *name = strrchr(rom, '/');
@@ -111,7 +128,8 @@ static void prep(const ra_account *account, int have_account) {
     // Sync, which returns through Unlaunch
     if (rom[0]) ra_write_text(AFTER_PREP_FILE, rom);
     SAY("\nStarting the game...\n");
-    ra_unlaunch_autoload(loader);
+    if (on_3ds) ra_twl_autorun(rom, 1);  // TWiLight Menu++ starts it through nds-bootstrap
+    handoff(loader);
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +191,9 @@ int main(void) {
         const int prep_mode = p != NULL;
         if (p) fclose(p);
         retry_self = prep_mode ? PREP_PATH : SYNC_PATH;
+        char mode[16];
+        ra_read_line(prep_mode ? PREP_FILE : RETURN_FILE, prep_mode ? 3 : 2, mode, sizeof(mode));
+        on_3ds = !strcmp(mode, "3ds");
 
         ra_account account;
         int have_account = ra_account_load(&account) == 0;
@@ -204,9 +225,14 @@ int main(void) {
         pause_frames(90);
         if (ra_logf) fclose(ra_logf);
     }
-    iprintf("\nBack to %s\n", next);
-    ra_unlaunch_autoload(next);
-    // No jump target: in DSi mode calico restarts the console and Unlaunch
-    // boots the path above
+    if (on_3ds) {
+        ra_twl_restore();  // the user's autorun settings back
+        iprintf("\nBack to TWiLight Menu++\n");
+    } else {
+        iprintf("\nBack to %s\n", next);
+    }
+    handoff(next);
+    // No jump target: calico restarts the console, into Unlaunch's path
+    // (DSi) or TWiLight Menu++'s title (3DS)
     return 0;
 }
