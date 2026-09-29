@@ -2,3 +2,4 @@ build/
 *.elf
 *.nds
 include/ra_secret.h
+ranet/blob/ranet.bin
