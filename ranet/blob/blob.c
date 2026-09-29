@@ -73,6 +73,7 @@ static u16 s_gpioWl;
 static u32 s_idleSince;
 static u32 s_stoppedAt;     // ticks when the last session ended
 static bool s_everStopped;
+static bool s_disabled;     // the in-game menu turned it off (enable())
 static char s_body[512];
 static char s_reply[1024];
 
@@ -197,7 +198,7 @@ static int blobInit(const struct RaNetHost* host, const struct RaNetConfig* conf
 
 static int blobAward(u32 seq, u32 achievementId, int hardcore, u32 secondsSinceUnlock)
 {
-	if (s_queued - s_reported >= QUEUE_MAX) return 0;
+	if (s_disabled || s_queued - s_reported >= QUEUE_MAX) return 0;
 	if (ranetGetState() == RanetState_Failed) return 0;
 	Award* a = &s_queue[s_queued % QUEUE_MAX];
 	a->seq = seq;
@@ -246,7 +247,7 @@ static void sessionPoll(void)
 	}
 	if (s_session == SESSION_OFF) {
 		const u32 now = ranetHostTicks();
-		if (now > START_DELAY && (!s_everStopped || now - s_stoppedAt > RETRY_DELAY)) sessionStart();
+		if (!s_disabled && now > START_DELAY && (!s_everStopped || now - s_stoppedAt > RETRY_DELAY)) sessionStart();
 		return;
 	}
 	ranetPoll();
@@ -332,6 +333,26 @@ static int blobStopped(void)
 	return s_session == SESSION_OFF;
 }
 
+static void blobEnable(int on)
+{
+	if (on) {
+		// Up again at the next poll, not after the retry delay
+		s_disabled = false;
+		s_everStopped = false;
+		dietPrint("[blob] turned on\n");
+	} else {
+		s_disabled = true;
+		blobStop();
+		// Queued awards stay for RA Sync
+		while (s_sending < s_queued) {
+			s_queue[s_sending % QUEUE_MAX].result = RA_AWARD_FAILED;
+			s_sending ++;
+		}
+		s_busy = false;
+		dietPrint("[blob] turned off\n");
+	}
+}
+
 __attribute__((section(".header"), used))
 const struct RaNetHeader ranetHeader = {
 	.magic = RA_NET_BLOB_MAGIC,
@@ -345,4 +366,5 @@ const struct RaNetHeader ranetHeader = {
 	.state = blobState,
 	.stop = blobStop,
 	.stopped = blobStopped,
+	.enable = blobEnable,
 };

@@ -8,7 +8,7 @@
 #define RA_NETBLOB_H
 
 #define RA_NET_BLOB_MAGIC   0x544E4152 // 'RANT'
-#define RA_NET_BLOB_VERSION 1
+#define RA_NET_BLOB_VERSION 2
 
 // Where the card engine puts it: nds-bootstrap-ra's RA region (0x0CE00000,
 // the DSi's extra RAM through the 0x0C000000 mirror) + 512KB.  The blob
@@ -79,6 +79,9 @@ struct RaNetHeader {
 	// WiFi off (disassociate, driver down); keep polling until stopped()
 	void (*stop)(void);
 	int (*stopped)(void);
+	// The in-game menu's switch: 0 turns WiFi off and keeps it off (awards
+	// are refused); 1 lets it come up again
+	void (*enable)(int on);
 };
 
 #endif

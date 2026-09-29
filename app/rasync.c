@@ -92,21 +92,37 @@ static int go_online(void) {
 // ---------------------------------------------------------------------------
 
 static void prep(const ra_account *account, int have_account) {
-    char rom[256] = "", loader[256] = "", fingerprint[64] = "";
+    char rom[256] = "", loader[256] = "", fingerprint[64] = "", net[8] = "", romok[8] = "";
     ra_read_line(PREP_FILE, 0, rom, sizeof(rom));
     ra_read_line(PREP_FILE, 1, loader, sizeof(loader));
     ra_read_line(PREP_FILE, 2, fingerprint, sizeof(fingerprint));
+    ra_read_line(PREP_FILE, 4, net, sizeof(net));      // "net": renew net.bin/tls.bin
+    ra_read_line(PREP_FILE, 5, romok, sizeof(romok));  // "romok": no need to hash
     remove(PREP_FILE);
     if (!loader[0]) snprintf(loader, sizeof(loader), "%s", DEFAULT_LOADER);
-    snprintf(retry_prep_text, sizeof(retry_prep_text), "%s\n%s\n%s\n%s\n", rom, loader, fingerprint,
-             on_3ds ? "3ds" : "");
+    snprintf(retry_prep_text, sizeof(retry_prep_text), "%s\n%s\n%s\n%s\n%s\n%s\n", rom, loader, fingerprint,
+             on_3ds ? "3ds" : "", net, romok);
     retry_self = PREP_PATH;
 
     const char *name = strrchr(rom, '/');
     SAY("Achievements for\n %.60s\n\n", name ? name + 1 : rom);
 
     int online = 0;
-    int done = ra_prepare_rom(account, have_account, rom, fingerprint, go_online, &online);
+    int done = 1;
+    if (strcmp(romok, "romok") != 0) done = ra_prepare_rom(account, have_account, rom, fingerprint, go_online, &online);
+
+    // Real-time upload (nds-bootstrap-ra's in-game sending): going online
+    // saves the WiFi profile (net.bin) and a fresh TLS session (tls.bin).
+    // The attempt is noted so that without WiFi the loader doesn't ask again
+    // for a while.
+    if (!strcmp(net, "net") && have_account) {
+        char when[16];
+        snprintf(when, sizeof(when), "%lu", (unsigned long)time(NULL));
+        ra_write_text(RA_DIR "/net_tried.txt", when);
+        SAY("Real-time upload: renewing\n");
+        if (!online) online = go_online();
+        if (online && ra_login(account) == 0) SAY("Real-time upload: ready\n");
+    }
     // Online anyway: send whatever unlocks are still waiting (usually RA
     // Sync does on quit)
     if (online && account->submit) {
