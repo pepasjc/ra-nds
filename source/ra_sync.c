@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #include "https.h"
 #include "nds_hash.h"
@@ -56,6 +57,8 @@ void ra_say(const char *format, ...) {
 }
 
 int ra_sync_init(void) {
+    mkdir(RA_DIR, 0777);  // a fresh card has neither
+    mkdir(RA_SETS_DIR, 0777);
     have_key = ra_key_derive(console_key) == 0;
     return have_key;
 }
