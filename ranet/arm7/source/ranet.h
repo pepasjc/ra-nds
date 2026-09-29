@@ -9,6 +9,7 @@
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
+typedef int32_t s32;
 #include "../../../include/ra_netprofile.h"
 
 #define RANET_HOST "retroachievements.org"
@@ -28,7 +29,7 @@ bool ranetHostNvramRead(void* dst, u32 addr, u32 len);
 
 // Starts bringing the network up in the background; arena: memory for
 // packets and TCP (RANET_ARENA_SIZE bytes, word aligned)
-#define RANET_ARENA_SIZE (160 * 1024)
+#define RANET_ARENA_SIZE (256 * 1024)
 bool ranetStart(const RaNetProfile* profile, void* arena);
 
 // Call often (every frame at least): runs the stack for a while
@@ -38,6 +39,11 @@ RanetState ranetGetState(void);
 
 // Debug: logs thread states and WiFi registers
 void ranetDebugDump(void);
+
+// Requests go over HTTPS, resuming this session (RA Sync's tls.bin; must
+// stay valid while in use); NULL or invalid: plain HTTP
+#include "../../../include/ra_tlssession.h"
+void ranetSetTlsSession(const RaTlsSession* session);
 
 // One HTTP GET/POST to the RA server, in the background.  path: e.g.
 // "/dorequest.php?r=...", body NULL for GET.  The reply (status line,

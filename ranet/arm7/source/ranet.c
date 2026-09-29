@@ -13,8 +13,9 @@
 #include "coop.h"
 #include "ranet.h"
 #include "ranet_host.h"
+#include "tls.h"
 
-extern EnvExtraInfo g_ranetEnv; // platform.c
+extern EnvExtraInfo g_ranetEnv; // ranet_platform.c
 
 // ---------------------------------------------------------------------------
 // Memory: a first-fit heap in the host's arena, for sgIP
@@ -238,6 +239,7 @@ static Thread s_netThread, s_tickThread;
 static u8 s_netStack[8], s_tickStack[8];
 
 // The request handed to the net thread
+static const RaTlsSession* s_tls; // HTTPS when set (ranetSetTlsSession)
 static const char* s_reqPath;
 static const char* s_reqBody;
 static char* s_reply;
@@ -298,10 +300,11 @@ static const char* utoa10(u32 value, char out[12])
 static int httpExchange(void)
 {
 	s_reply[0] = '\0';
+	const bool secure = s_tls != NULL;
 	SGIP_INTR_PROTECT();
 	sgIP_Record_TCP* rec = sgIP_TCP_AllocRecord();
-	int ok = rec
-		&& sgIP_TCP_Connect(rec, s_profile.ra_server, 0x5000) == 0; // port 80, network order
+	int ok = rec // port 443 or 80, network order
+		&& sgIP_TCP_Connect(rec, s_profile.ra_server, secure ? 0xBB01 : 0x5000) == 0;
 	SGIP_INTR_UNPROTECT();
 	if (!ok) {
 		dietPrint("[net] tcp: can't start\n");
@@ -319,6 +322,16 @@ static int httpExchange(void)
 		return -1;
 	}
 	dietPrint("[net] tcp: connected in %lu ms\n", ms() - start);
+	if (secure) {
+		u32 t = ms();
+		if (tlsOpen(rec, s_tls, RANET_HOST, 15000) != 0) {
+			SGIP_INTR_PROTECT();
+			sgIP_TCP_Close(rec);
+			SGIP_INTR_UNPROTECT();
+			return -2;
+		}
+		dietPrint("[net] tls: resumed in %lu ms\n", ms() - t);
+	}
 
 	// Request
 	static char head[512];
@@ -339,29 +352,44 @@ static int httpExchange(void)
 	for (int i = 0; i < 2; i ++) {
 		u32 sent = 0;
 		while (sent < lens[i] && ms() - start < 20000) {
-			SGIP_INTR_PROTECT();
-			int r = sgIP_TCP_Send(rec, parts[i] + sent, lens[i] - sent, 0);
-			SGIP_INTR_UNPROTECT();
-			if (r > 0) sent += r; else threadSleep(10000);
+			int r;
+			if (secure) {
+				r = tlsWrite(parts[i] + sent, lens[i] - sent);
+			} else {
+				SGIP_INTR_PROTECT();
+				r = sgIP_TCP_Send(rec, parts[i] + sent, lens[i] - sent, 0);
+				SGIP_INTR_UNPROTECT();
+			}
+			if (r > 0) sent += r;
+			else if (secure && r < 0) break;
+			else threadSleep(10000);
 		}
 	}
 
 	// Reply, until the server closes
 	u32 got = 0;
 	start = ms();
-	while (ms() - start < 20000) {
-		SGIP_INTR_PROTECT();
-		int r = (got < s_replySize - 1) ? sgIP_TCP_Recv(rec, s_reply + got, s_replySize - 1 - got, 0) : 0;
-		int state = rec->tcpstate;
-		SGIP_INTR_UNPROTECT();
+	while (ms() - start < 20000 && got < s_replySize - 1) {
+		int r;
+		bool open;
+		if (secure) {
+			r = tlsRead(s_reply + got, s_replySize - 1 - got);
+			open = r == TLS_WOULD_BLOCK;
+		} else {
+			SGIP_INTR_PROTECT();
+			r = sgIP_TCP_Recv(rec, s_reply + got, s_replySize - 1 - got, 0);
+			open = rec->tcpstate == SGIP_TCP_STATE_ESTABLISHED;
+			SGIP_INTR_UNPROTECT();
+		}
 		if (r > 0) {
 			got += r;
 			continue;
 		}
-		if (state != SGIP_TCP_STATE_ESTABLISHED) break;
+		if (!open) break;
 		threadSleep(10000);
 	}
 	s_reply[got] = '\0';
+	if (secure) tlsClose();
 	SGIP_INTR_PROTECT();
 	sgIP_TCP_Close(rec);
 	SGIP_INTR_UNPROTECT();
@@ -483,6 +511,12 @@ void ranetDebugDump(void)
 RanetState ranetGetState(void)
 {
 	return s_state;
+}
+
+void ranetSetTlsSession(const RaTlsSession* session)
+{
+	s_tls = (session && session->magic == RA_TLS_SESSION_MAGIC && session->size == sizeof(RaTlsSession)
+		&& session->ticket_len && session->ticket_len <= RA_TLS_TICKET_MAX) ? session : NULL;
 }
 
 bool ranetRequest(const char* path, const char* body, char* reply, u32 reply_size)

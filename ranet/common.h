@@ -15,6 +15,7 @@ typedef struct {
 	u32 log;       // RanetLog*
 	u32 reply;     // reply buffer
 	u32 replySize;
+	u32 tls;       // RaTlsSession* or 0: plain HTTP
 	char path[160];
 } RanetStartMsg;
 

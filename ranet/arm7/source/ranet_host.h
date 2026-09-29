@@ -18,7 +18,7 @@ bool ranetHostI2cWrite(uint8_t dev, uint8_t reg, uint8_t data);
 // NULL means that many spaces
 void ranetHostLog(const char* buf, unsigned size);
 
-// platform.c
+// ranet_platform.c
 void ranetPollIrq2(void);
 void ranetNetbufInit(void* arena);
 unsigned ranetNetbufArenaSize(void);

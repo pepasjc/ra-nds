@@ -6,11 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef uint8_t u8;
+#include <time.h>
 #include "../../../include/ra_netprofile.h"
+#include "../../../include/ra_tlssession.h"
 #include "../../common.h"
 
-#define RANET_ARENA_SIZE (160 * 1024)
+#define RANET_ARENA_SIZE (256 * 1024)
 #define REPLY_SIZE 2048
 
 static const char* stateName(int s)
@@ -37,6 +38,18 @@ int main(void)
 		iprintf("No sd:/_nds/ra/net.bin:\nrun RA Tool (A) once first\n");
 		while (1) swiWaitForVBlank();
 	}
+	// RA Sync's TLS session: HTTPS by resuming it, else plain HTTP
+	static RaTlsSession tls;
+	f = fopen("sd:/_nds/ra/tls.bin", "rb");
+	bool haveTls = f && fread(&tls, 1, sizeof(tls), f) == sizeof(tls) && tls.magic == RA_TLS_SESSION_MAGIC;
+	if (f) fclose(f);
+	if (haveTls) {
+		long age = (long)(time(NULL) - (time_t)tls.saved);
+		iprintf("TLS session: %ld min old\n (lasts %lu min)\n", age / 60, (unsigned long)tls.ticket_lifetime / 60);
+	} else {
+		iprintf("No tls.bin: plain HTTP\n");
+	}
+
 	u8* ip = (u8*)&profile.ip;
 	u8* srv = (u8*)&profile.ra_server;
 	iprintf("AP %.*s ch %d\nIP %d.%d.%d.%d\nRA %d.%d.%d.%d\n\n", profile.ssid_len, profile.ssid, profile.channel,
@@ -57,6 +70,7 @@ int main(void)
 	msg.log = (u32)&log;
 	msg.reply = (u32)reply;
 	msg.replySize = REPLY_SIZE;
+	msg.tls = haveTls ? (u32)&tls : 0;
 	snprintf(msg.path, sizeof(msg.path), "/dorequest.php?r=gameid&m=00000000000000000000000000000000");
 	DC_FlushAll();
 	u32 t0 = 0;

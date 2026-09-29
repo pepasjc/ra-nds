@@ -37,6 +37,11 @@ void https_close(void);
 // What the last failure was ("Handshake: -0x0050 connection closed", ...)
 const char *https_last_error(void);
 
+// After each handshake with RetroAchievements, write the session to path
+// (include/ra_tlssession.h) for nds-bootstrap-ra's in-game sending; NULL:
+// don't
+void https_set_session_file(const char *path);
+
 // Optional hook told each step of https_close (diagnostics)
 void https_set_trace(void (*trace)(const char *step));
 const https_stats *https_get_stats(void);

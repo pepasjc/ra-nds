@@ -97,6 +97,7 @@ int main(void)
 			if (!ranetStart((const RaNetProfile*)s_start.profile, (void*)s_start.arena)) {
 				ranetHostLog("[host] bad profile\n", 19);
 			}
+			ranetSetTlsSession((const RaTlsSession*)s_start.tls);
 		}
 		if (s_log) s_log->beat ++;
 		ranetPoll();

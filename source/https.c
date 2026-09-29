@@ -5,8 +5,13 @@
 #else
 // Host build (tests/run_host_step2.sh): same code over POSIX sockets
 #include <time.h>
+#include <stdint.h>
 #define iprintf printf
 #define closesocket close
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef int32_t s32;
 #endif
 #include <netdb.h>
 #include <netinet/in.h>
@@ -20,6 +25,7 @@
 #include <unistd.h>
 
 #include "https.h"
+#include "ra_tlssession.h"
 
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
@@ -44,6 +50,40 @@ static int have_session;
 
 static int fd = -1;
 static char connected_host[64];
+
+// The session for nds-bootstrap-ra (https_set_session_file)
+static const char *session_file;
+
+void https_set_session_file(const char *path) {
+    session_file = path;
+}
+
+static void export_session(const char *host) {
+    if (!session_file || strcmp(host, "retroachievements.org") != 0) return;
+    const mbedtls_ssl_session *s = &saved_session;
+    if (!s->ticket || s->ticket_len == 0 || s->ticket_len > RA_TLS_TICKET_MAX || s->id_len > 32) return;
+    static RaTlsSession out;
+    memset(&out, 0, sizeof(out));
+    out.magic = RA_TLS_SESSION_MAGIC;
+    out.version = RA_TLS_SESSION_VERSION;
+    out.size = sizeof(out);
+    out.saved = (u32)time(NULL);
+    out.ticket_lifetime = s->ticket_lifetime;
+    out.ciphersuite = s->ciphersuite;
+    out.id_len = (u8)s->id_len;
+    out.encrypt_then_mac = (u8)s->encrypt_then_mac;
+    out.mfl_code = s->mfl_code;
+    memcpy(out.id, s->id, s->id_len);
+    memcpy(out.master, s->master, sizeof(out.master));
+    out.ticket_len = (u16)s->ticket_len;
+    memcpy(out.ticket, s->ticket, s->ticket_len);
+    FILE *f = fopen(session_file, "wb");
+    if (f) {
+        fwrite(&out, 1, sizeof(out), f);
+        fclose(f);
+    }
+    memset(&out, 0, sizeof(out));
+}
 
 // Buffered reads from the TLS stream
 static unsigned char rbuf[4096];
@@ -290,6 +330,7 @@ static int https_connect(const char *host) {
     mbedtls_ssl_session_free(&saved_session);
     mbedtls_ssl_session_init(&saved_session);
     have_session = mbedtls_ssl_get_session(&ssl, &saved_session) == 0;
+    if (have_session) export_session(host);
 
     snprintf(connected_host, sizeof(connected_host), "%s", host);
     rpos = rlen = 0;

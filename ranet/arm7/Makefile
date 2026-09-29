@@ -8,8 +8,13 @@ endif
 include $(DEVKITARM)/ds_rules
 
 BUILD		:=	build
+TLS		?=	1
+LAYOUT		?=	ewram
 SOURCES		:=	source calico calico/dev calico/dev/ar6k calico/nds sgIP
-INCLUDES	:=	source calico/include sgIP compat build
+ifeq ($(TLS),1)
+SOURCES		+=	../../external/mbedtls/library
+endif
+INCLUDES	:=	source calico/include sgIP compat ../../external/mbedtls/include build
 DATA		:=
 
 ARCH	:=	-mthumb-interwork
@@ -18,11 +23,19 @@ CFLAGS	:=	-g -Wall -Os -std=gnu11 \
 		-mcpu=arm7tdmi -mtune=arm7tdmi -fomit-frame-pointer -ffunction-sections -fdata-sections \
 		$(ARCH)
 
-CFLAGS	+=	$(INCLUDE) -DARM7 -D__NDS__ -DRANET -DSDIO_DEBUG -DTMIO_DEBUG -DAR6K_DEBUG -DTWLWIFI_DEBUG -DWPA_DEBUG -Wno-unused-function -Wno-address-of-packed-member
+CFLAGS	+=	$(INCLUDE) -DARM7 -D__NDS__ -DRANET '-DMBEDTLS_CONFIG_FILE="mbedtls_config_arm7.h"' -DAR6K_DEBUG -DTWLWIFI_DEBUG -DWPA_DEBUG -Wno-unused-function -Wno-address-of-packed-member
+ifneq ($(TLS),1)
+CFLAGS	+=	-DRANET_NO_TLS
+endif
 CXXFLAGS	:=	$(CFLAGS) -fno-rtti -fno-exceptions
 
 ASFLAGS	:=	-g $(ARCH) $(INCLUDE) -DARM7 -D__NDS__
-LDFLAGS	=	-specs=ds_arm7.specs -g $(ARCH) -Wl,--nmagic -Wl,--gc-sections -Wl,-Map,$(notdir $*).map
+ifeq ($(LAYOUT),iwram)
+SPECS	:=	ds_arm7.specs
+else
+SPECS	:=	../ds_arm7_ewram.specs
+endif
+LDFLAGS	=	-specs=$(SPECS) -g $(ARCH) -Wl,--nmagic -Wl,--gc-sections -Wl,-Map,$(notdir $*).map
 
 LIBS	:=	-lnds7
 LIBDIRS	:=	$(LIBNDS)
@@ -34,6 +47,9 @@ export DEPSDIR	:=	$(CURDIR)/$(BUILD)
 export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir))
 
 CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+ifneq ($(TLS),1)
+CFILES		:=	$(filter-out tls.c,$(CFILES))
+endif
 SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 
 export OFILES	:=	$(CFILES:.c=.o) $(SFILES:.s=.o)

@@ -72,6 +72,7 @@ static void note_network_step(const char *step) {
 
 int ra_sync_init(void) {
     https_set_trace(note_network_step);  // where a hang happened, in the log
+    https_set_session_file(RA_DIR "/tls.bin");  // for in-game sending
     mkdir(RA_DIR, 0777);  // a fresh card has neither
     mkdir(RA_SETS_DIR, 0777);
     have_key = ra_key_derive(console_key) == 0;
