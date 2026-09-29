@@ -11,6 +11,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/select.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,8 +28,6 @@
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
 
-// Longest wait for the server between two reads
-#define READ_TIMEOUT_MS 15000
 
 extern const char ra_ca_pem[];
 extern const size_t ra_ca_pem_len;
@@ -120,34 +119,41 @@ static void tls_error(const char *what, int err) {
     snprintf(last_error, sizeof(last_error), "%s: -0x%04X %s", what, -err, msg);
 }
 
-// Blocking sockets: a negative result is a dropped connection, never "try
-// again".  (dswifi's sgIP stack ignores SO_RCVTIMEO: setsockopt is a stub.)
+// The socket is non-blocking once connected: dswifi's sgIP stack has no
+// socket timeouts (setsockopt is a stub), and a stalled connection blocked
+// recv() or send() for good (on a 3DS every few dozen requests).  So nothing
+// here waits: "nothing yet" comes back as WANT_READ/WANT_WRITE, and the
+// loops below give up once no byte has moved for STALL_SECONDS.
+#define STALL_SECONDS 20
+#define IDLE_RECONNECT_SECONDS 30
+static time_t last_progress;
+
 static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
     int n = send(*(int *)ctx, buf, len, 0);
-    return n < 0 ? MBEDTLS_ERR_NET_SEND_FAILED : n;
+    if (n > 0) last_progress = time(NULL);
+    return n > 0 ? n : MBEDTLS_ERR_SSL_WANT_WRITE;
 }
 
 static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
     int n = recv(*(int *)ctx, buf, len, 0);
     if (n == 0) return MBEDTLS_ERR_NET_CONN_RESET;
-    return n < 0 ? MBEDTLS_ERR_NET_RECV_FAILED : n;
+    if (n > 0) last_progress = time(NULL);
+    return n > 0 ? n : MBEDTLS_ERR_SSL_WANT_READ;
 }
 
-// Reads with a deadline: with no socket timeouts, a stalled connection made
-// recv() block for good (a full run froze at game 56).  select() for reading
-// waits for data, then recv() takes it.
-static int bio_recv_timeout(void *ctx, unsigned char *buf, size_t len, uint32_t timeout_ms) {
-    int sock = *(int *)ctx;
-    if (timeout_ms) {
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(sock, &rfds);
-        struct timeval tv = { timeout_ms / 1000, (timeout_ms % 1000) * 1000 };
-        int n = select(sock + 1, &rfds, NULL, NULL, &tv);
-        if (n == 0) return MBEDTLS_ERR_SSL_TIMEOUT;
-        if (n < 0) return MBEDTLS_ERR_NET_RECV_FAILED;
+// After a WANT_READ/WANT_WRITE: wait a moment, 1 once the connection has
+// been silent too long
+static int stalled(void) {
+    if (time(NULL) - last_progress > STALL_SECONDS) {
+        set_error("no answer (stalled)");
+        return 1;
     }
-    return bio_recv(ctx, buf, len);
+#ifdef __NDS__
+    swiWaitForVBlank();
+#else
+    usleep(10000);
+#endif
+    return 0;
 }
 
 int https_init(const char *agent) {
@@ -179,7 +185,6 @@ int https_init(const char *agent) {
     mbedtls_ssl_conf_ca_chain(&conf, &ca, NULL);
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg);
     mbedtls_ssl_conf_verify(&conf, count_certs, NULL);
-    mbedtls_ssl_conf_read_timeout(&conf, READ_TIMEOUT_MS);
     if ((r = mbedtls_ssl_setup(&ssl, &conf)) != 0) {
         tls_error("TLS setup", r);
         return -1;
@@ -216,7 +221,9 @@ const https_stats *https_get_stats(void) {
 
 static int https_connect(const char *host) {
     https_close();
+    TRACE("dns");
     struct hostent *he = gethostbyname(host);
+    TRACE("tcp connect");
     if (!he) {
         iprintf("\x1b[31mDNS failed for %s\x1b[39m\n", host);
         set_error("DNS failed");
@@ -243,6 +250,9 @@ static int https_connect(const char *host) {
         return -1;
     }
     stats.connects++;
+    int on = 1;
+    ioctl(fd, FIONBIO, &on);  // see bio_send
+    last_progress = time(NULL);
 
     int r;
     mbedtls_ssl_session_reset(&ssl);
@@ -251,13 +261,15 @@ static int https_connect(const char *host) {
         https_close();
         return -1;
     }
-    mbedtls_ssl_set_bio(&ssl, &fd, bio_send, NULL, bio_recv_timeout);
+    mbedtls_ssl_set_bio(&ssl, &fd, bio_send, bio_recv, NULL);
     // Offer the last session (one host in practice; the server decides)
     if (have_session) mbedtls_ssl_set_session(&ssl, &saved_session);
 
+    TRACE("tls handshake");
     certs_checked = 0;
     while ((r = mbedtls_ssl_handshake(&ssl)) != 0) {
-        if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+        if ((r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) && !stalled()) continue;
+        if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) r = MBEDTLS_ERR_SSL_TIMEOUT;
         tls_error("Handshake", r);
         uint32_t flags = mbedtls_ssl_get_verify_result(&ssl);
         if (flags && flags != (uint32_t)-1) {
@@ -287,7 +299,10 @@ static int https_connect(const char *host) {
 static int write_all(const char *data, size_t len) {
     for (size_t sent = 0; sent < len;) {
         int r = mbedtls_ssl_write(&ssl, (const unsigned char *)data + sent, len - sent);
-        if (r == MBEDTLS_ERR_SSL_WANT_WRITE || r == MBEDTLS_ERR_SSL_WANT_READ) continue;
+        if (r == MBEDTLS_ERR_SSL_WANT_WRITE || r == MBEDTLS_ERR_SSL_WANT_READ) {
+            if (stalled()) return MBEDTLS_ERR_SSL_TIMEOUT;
+            continue;
+        }
         if (r < 0) return r;
         sent += r;
     }
@@ -297,9 +312,14 @@ static int write_all(const char *data, size_t len) {
 // Refill rbuf: bytes read, 0 at the end of the stream, <0 on error
 static int fill(void) {
     int r;
-    do {
+    for (;;) {
         r = mbedtls_ssl_read(&ssl, rbuf, sizeof(rbuf));
-    } while (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE);
+        if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) break;
+        if (stalled()) {
+            r = MBEDTLS_ERR_SSL_TIMEOUT;
+            break;
+        }
+    }
     if (r == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) r = 0;
     rpos = 0;
     rlen = r > 0 ? r : 0;
@@ -459,8 +479,13 @@ int https_request(const char *url, const char *post_data, const char *content_ty
             stats.retries++;
             wait_seconds(attempt);
         }
+        // A connection idle for a while has likely been dropped by the server
+        // (or the WiFi); start a fresh one rather than wait for it to stall
+        if (fd >= 0 && time(NULL) - last_progress > IDLE_RECONNECT_SECONDS) https_close();
         int reused = fd >= 0 && strcmp(host, connected_host) == 0;
         if (!reused && https_connect(host)) continue;
+        TRACE("request");
+        last_progress = time(NULL);
         int r = exchange(host, path, post_data, content_type, res);
         if (r == 0) {
             res->ms = timer_ms();

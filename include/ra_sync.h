@@ -23,6 +23,8 @@
 // Log file ra_say() copies the screen output to (NULL: screen only)
 extern FILE *ra_logf;
 void ra_say(const char *format, ...) __attribute__((format(printf, 1, 2)));
+// To the log only (steps worth knowing when something hangs)
+void ra_note(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 // Derives the console key.  1 when there is one (an eMMC CID).
 int ra_sync_init(void);

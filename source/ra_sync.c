@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <sys/stat.h>
 
 #include "https.h"
@@ -50,13 +51,27 @@ void ra_say(const char *format, ...) {
     vsnprintf(text, sizeof(text), format, args);
     va_end(args);
     iprintf("%s", text);
-    if (ra_logf) {
-        fputs(text, ra_logf);
-        fflush(ra_logf);
-    }
+    ra_note("%s", text);
+}
+
+// Log only.  Synced to the card each time: a run that hangs otherwise
+// leaves an empty log (the file size is only written on close).
+void ra_note(const char *format, ...) {
+    if (!ra_logf) return;
+    va_list args;
+    va_start(args, format);
+    vfprintf(ra_logf, format, args);
+    va_end(args);
+    fflush(ra_logf);
+    fsync(fileno(ra_logf));
+}
+
+static void note_network_step(const char *step) {
+    ra_note("%ld net: %s\n", (long)time(NULL), step);
 }
 
 int ra_sync_init(void) {
+    https_set_trace(note_network_step);  // where a hang happened, in the log
     mkdir(RA_DIR, 0777);  // a fresh card has neither
     mkdir(RA_SETS_DIR, 0777);
     have_key = ra_key_derive(console_key) == 0;
@@ -227,6 +242,7 @@ int ra_prepare_rom(const ra_account *account, int have_account, const char *rom,
 
     char md5[33], known[33];
     uint32_t known_game = 0;
+    ra_note("%ld hashing %s\n", (long)time(NULL), rom);
     if (!rom[0] || !nds_hash_file(rom, md5)) {
         ra_say("\x1b[31mCan't read the ROM\x1b[39m\n");
         return 0;
@@ -255,11 +271,13 @@ int ra_prepare_rom(const ra_account *account, int have_account, const char *rom,
         ra_say("No account in\n " RA_ACCOUNT_FILE "\n");
         return 0;
     }
+    ra_note("%ld hash %s, going online\n", (long)time(NULL), md5);
     if (!online()) return 0;
     *went_online = 1;
 
     int done = 0;
     uint32_t game_id = 0;
+    ra_note("%ld looking up the hash\n", (long)time(NULL));
     if (ra_resolve_hash(md5, &game_id)) {
         ra_say("\x1b[31mRetroAchievements didn't answer\x1b[39m\n %.80s\n", https_last_error());
     } else if (game_id == 0) {
@@ -270,6 +288,7 @@ int ra_prepare_rom(const ra_account *account, int have_account, const char *rom,
         char *set = NULL;
         size_t length = 0;
         unsigned count = 0;
+        ra_note("%ld fetching the set of game %lu\n", (long)time(NULL), (unsigned long)game_id);
         if (ra_fetch_set(account, game_id, md5, &set, &length, &count) == 0) {
             char tmp[330];
             snprintf(tmp, sizeof(tmp), "%s.tmp", set_path);
