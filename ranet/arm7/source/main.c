@@ -100,6 +100,17 @@ int main(void)
 			ranetSetTlsSession((const RaTlsSession*)s_start.tls);
 		}
 		if (s_log) s_log->beat ++;
+		// ARM9 quitting: WiFi off first, then say so
+		static bool stopping, stopReported;
+		if (!stopping && fifoCheckValue32(FIFO_USER_03)) {
+			fifoGetValue32(FIFO_USER_03);
+			stopping = true;
+			ranetStop();
+		}
+		if (stopping && !stopReported && ranetStopped()) {
+			stopReported = true;
+			fifoSendValue32(FIFO_USER_03, 1);
+		}
 		ranetPoll();
 		int state = ranetGetState();
 		// Debug: a snapshot every 3 s while not online

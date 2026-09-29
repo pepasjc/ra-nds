@@ -245,6 +245,7 @@ static const char* s_reqBody;
 static char* s_reply;
 static u32 s_replySize;
 static volatile bool s_reqPending, s_reqDone;
+static volatile bool s_stop, s_stopped; // ranetStop()
 static int s_httpStatus;
 
 static void onAssoc(void* user, bool success, unsigned reason)
@@ -257,7 +258,7 @@ static void onAssoc(void* user, bool success, unsigned reason)
 static int tickMain(void* arg)
 {
 	(void)arg;
-	for (;;) {
+	while (!s_stop) {
 		SGIP_INTR_PROTECT();
 		sgIP_Timer(50);
 		SGIP_INTR_UNPROTECT();
@@ -402,6 +403,9 @@ static int httpExchange(void)
 	return status;
 }
 
+// Joins, then serves requests until ranetStop(); false if it couldn't join
+static bool netSession(void);
+
 static int netMain(void* arg)
 {
 	(void)arg;
@@ -413,6 +417,23 @@ static int netMain(void* arg)
 		return -1;
 	}
 	dietPrint("[net] driver up in %lu ms\n", ms() - t0);
+	bool ok = netSession();
+
+	// Leave the chip as the next WiFi program expects it: not associated,
+	// no keys installed, driver threads gone (else it won't come up again
+	// until the console restarts)
+	while (!s_stop) threadSleep(20000);
+	s_iface = NULL;
+	twlwifiExit();
+	dietPrint("[net] WiFi off\n");
+	s_state = ok ? RanetState_Off : RanetState_Failed;
+	s_stopped = true;
+	return 0;
+}
+
+static bool netSession(void)
+{
+	u32 t0;
 
 	// The access point RA Sync last used, with the key from NVRAM
 	memset(&s_bss, 0, sizeof(s_bss));
@@ -427,17 +448,28 @@ static int netMain(void* arg)
 	if (!findKey(&s_profile, &s_bss, &s_auth)) {
 		dietPrint("[net] no WiFi setting for %.*s\n", s_profile.ssid_len, s_profile.ssid);
 		s_state = RanetState_Failed;
-		return -1;
+		return false;
 	}
 
+	// A few tries: the chip may still be joined from the program before
+	// (the first try then fails at once with a disassociation)
 	s_state = RanetState_Associating;
 	t0 = ms();
-	s_assoc = 0;
-	if (!twlwifiAssociate(&s_bss, &s_auth, onAssoc, NULL) || !waitFor(&s_assoc, 15000)) {
+	bool joined = false;
+	for (int attempt = 1; attempt <= 3 && !joined && !s_stop; attempt ++) {
+		s_assoc = 0;
+		joined = twlwifiAssociate(&s_bss, &s_auth, onAssoc, NULL) && waitFor(&s_assoc, 15000);
+		if (!joined) {
+			dietPrint("[net] join attempt %d failed\n", attempt);
+			twlwifiDisassociate();
+			threadSleep(500000);
+		}
+	}
+	if (!joined) {
 		dietPrint("[net] couldn't join the access point\n");
 		memset(&s_auth, 0, sizeof(s_auth));
 		s_state = RanetState_Failed;
-		return -1;
+		return false;
 	}
 	memset(&s_auth, 0, sizeof(s_auth));
 	dietPrint("[net] joined in %lu ms\n", ms() - t0);
@@ -461,14 +493,15 @@ static int netMain(void* arg)
 	s_state = RanetState_Online;
 
 	for (;;) {
-		while (!s_reqPending) threadSleep(20000);
+		while (!s_reqPending && !s_stop) threadSleep(20000);
+		if (s_stop) break;
 		s_state = RanetState_Busy;
 		s_httpStatus = httpExchange();
 		s_reqPending = false;
 		s_reqDone = true;
 		s_state = RanetState_Online;
 	}
-	return 0;
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +525,17 @@ bool ranetStart(const RaNetProfile* profile, void* arena)
 	threadStart(&s_netThread);
 	s_state = RanetState_Starting;
 	return true;
+}
+
+void ranetStop(void)
+{
+	s_stop = true;
+}
+
+bool ranetStopped(void)
+{
+	return s_stopped || s_state == RanetState_Off
+		|| (s_state == RanetState_Failed && coopAllDone());
 }
 
 void ranetPoll(void)

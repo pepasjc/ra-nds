@@ -37,6 +37,12 @@ void ranetPoll(void);
 
 RanetState ranetGetState(void);
 
+// Disconnects and shuts the WiFi driver down (keep calling ranetPoll()
+// until ranetStopped()): a later WiFi program, or the next start, finds
+// the chip as it expects
+void ranetStop(void);
+bool ranetStopped(void);
+
 // Debug: logs thread states and WiFi registers
 void ranetDebugDump(void);
 

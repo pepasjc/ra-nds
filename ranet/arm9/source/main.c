@@ -119,6 +119,20 @@ int main(void)
 		scanKeys();
 		if (keysDown() & KEY_START) break;
 	}
+	// WiFi off before leaving, else the next WiFi program can't use it
+	iprintf("\nWiFi off...\n");
+	fifoSendValue32(FIFO_USER_03, 1);
+	for (int i = 0; i < 300 && !fifoCheckValue32(FIFO_USER_03); i ++) {
+		swiWaitForVBlank();
+		DC_InvalidateRange(&log, sizeof(log));
+		while (shown < log.head) {
+			char c = log.text[shown % RANET_LOG_SIZE];
+			iprintf("%c", c);
+			if (savedLen < sizeof(saved) - 1) saved[savedLen ++] = c;
+			shown ++;
+		}
+	}
+	if (!fifoCheckValue32(FIFO_USER_03)) SAVE("(WiFi didn't stop in 5 s)\n");
 	iprintf("\nSaving the log...\n");
 	if (logf) {
 		fprintf(logf, "--- run\n");
