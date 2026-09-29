@@ -169,11 +169,11 @@ static void prep(const ra_account *account, int have_account) {
 static void sync(const ra_account *account, int have_account, const char *played_rom) {
     retry_self = SYNC_PATH;
     int moved = ra_move_ring();
-    if (moved) SAY("%d new unlock%s from the game\n", moved, moved == 1 ? "" : "s");
+    if (moved) SAY("%d unlock%s saved from the game\n", moved, moved == 1 ? "" : "s");
 
     long pending = ra_pending_unlocks();
     if (pending <= 0) {
-        SAY("Nothing new to send\n");
+        SAY(moved ? "All sent already, during the game\n" : "Nothing new to send\n");
         return;
     }
     SAY("%ld unlock%s to send\n", pending, pending == 1 ? "" : "s");
