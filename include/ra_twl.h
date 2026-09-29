@@ -1,9 +1,9 @@
 // The 3DS hand-off: no Unlaunch there, so RA Prep and RA Sync are started by
 // TWiLight Menu++'s own "autorun last game" (settings.ini: AUTORUNGAME,
-// ROM_PATH, LAUNCH_TYPE, PREVIOUS_USED_DEVICE), and each step returns by
-// restarting the console into TWiLight Menu++'s title (TLNC, with the title
-// id TWiLight Menu++ leaves in sd:/_nds/nds-bootstrap/srBackendId.bin).
-// nds-bootstrap-ra (ra_boot.cpp) does the same from its side; the user's
+// ROM_PATH, LAUNCH_TYPE, PREVIOUS_USED_DEVICE), and each app step returns
+// to TWiLight Menu++ by returning from main() (a TLNC restart into its title
+// left both screens white).  nds-bootstrap-ra (ra_boot.cpp) sets the same
+// keys from its side and restarts through TLNC; the user's
 // own values of those settings are kept in sd:/_nds/ra/twl_restore.txt.
 #ifndef RA_TWL_H
 #define RA_TWL_H
@@ -24,9 +24,5 @@ int ra_twl_pending(void);
 // Safety net: autorun off if it still points at one of our apps, so a lost
 // step can't restart into RA Sync for ever
 void ra_twl_stop_autorun(void);
-
-// Sets TLNC so that returning from main() restarts into TWiLight Menu++.
-// 0 on success (-1: no title id).
-int ra_twl_reboot_target(void);
 
 #endif

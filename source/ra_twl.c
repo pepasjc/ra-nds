@@ -10,7 +10,6 @@
 
 #define TWL_SETTINGS "sd:/_nds/TWiLightMenu/settings.ini"
 #define TWL_RESTORE RA_DIR "/twl_restore.txt"
-#define TWL_TITLE_ID "sd:/_nds/nds-bootstrap/srBackendId.bin"
 
 static const char *const keys[] = { "AUTORUNGAME", "ROM_PATH", "LAUNCH_TYPE", "PREVIOUS_USED_DEVICE" };
 #define KEY_COUNT 4
@@ -179,20 +178,4 @@ void ra_twl_stop_autorun(void) {
     const char *name[1] = { "AUTORUNGAME" };
     const char *value[1] = { "0" };
     set_values(name, value, 1);
-}
-
-int ra_twl_reboot_target(void) {
-    u32 id[2] = {0, 0};
-    FILE *f = fopen(TWL_TITLE_ID, "rb");
-    if (!f) return -1;
-    int ok = fread(id, sizeof(u32), 2, f) == 2;
-    fclose(f);
-    if (!ok || (!id[0] && !id[1])) return -1;
-    TlncData data = {0};
-    data.target_tid = ((u64)id[1] << 32) | id[0];
-    data.valid = 1;
-    data.app_type = TlncAppType_Nand;
-    tlncSetData(&data);
-    pmClearResetJumpTarget();
-    return 0;
 }

@@ -60,14 +60,12 @@ static char retry_prep_text[600];   // prep.txt for it (prep removed the file)
 // the console restarts into TWiLight Menu++ (ra_twl.c)
 static int on_3ds;
 
-// Restart into path next: through Unlaunch on a DSi, through TWiLight
-// Menu++ (whose autorun setting says what runs) on a 3DS
+// Restart into path next: through Unlaunch on a DSi.  On a 3DS nothing to
+// set: returning from main() goes back to TWiLight Menu++, whose autorun
+// setting says what runs (a TLNC restart into its title left both screens
+// white there)
 static void handoff(const char *path) {
-    if (on_3ds) {
-        if (ra_twl_reboot_target()) SAY("\x1b[31mNo TWiLight Menu++ title id\x1b[39m\n");
-    } else {
-        ra_unlaunch_autoload(path);
-    }
+    if (!on_3ds) ra_unlaunch_autoload(path);
 }
 
 static void restart_if_wifi_hung(void) {
@@ -235,7 +233,7 @@ int main(void) {
         iprintf("\nBack to %s\n", next);
     }
     handoff(next);
-    // No jump target: calico restarts the console, into Unlaunch's path
-    // (DSi) or TWiLight Menu++'s title (3DS)
+    // Started by Unlaunch (DSi): calico restarts the console, into
+    // Unlaunch's path.  Started by TWiLight Menu++ (3DS): back to it.
     return 0;
 }
