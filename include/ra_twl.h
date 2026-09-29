@@ -15,6 +15,16 @@ int ra_twl_autorun(const char *rom, int through_bootstrap);
 // Puts the user's autorun settings back (twl_restore.txt), if saved
 void ra_twl_restore(void);
 
+// TWiLight Menu++'s autorun points at one of our apps (sd:/_nds/ra/...)
+int ra_twl_autorun_is_ours(void);
+
+// A 3DS chain is under way: twl_restore.txt exists or autorun is ours
+int ra_twl_pending(void);
+
+// Safety net: autorun off if it still points at one of our apps, so a lost
+// step can't restart into RA Sync for ever
+void ra_twl_stop_autorun(void);
+
 // Sets TLNC so that returning from main() restarts into TWiLight Menu++.
 // 0 on success (-1: no title id).
 int ra_twl_reboot_target(void);

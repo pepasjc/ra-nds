@@ -193,7 +193,9 @@ int main(void) {
         retry_self = prep_mode ? PREP_PATH : SYNC_PATH;
         char mode[16];
         ra_read_line(prep_mode ? PREP_FILE : RETURN_FILE, prep_mode ? 3 : 2, mode, sizeof(mode));
-        on_3ds = !strcmp(mode, "3ds");
+        // Also when the mark was lost but a 3DS chain is visibly under way
+        // (a lost mark once looped: RA Sync restarting into itself)
+        on_3ds = !strcmp(mode, "3ds") || ra_twl_pending();
 
         ra_account account;
         int have_account = ra_account_load(&account) == 0;
@@ -226,7 +228,8 @@ int main(void) {
         if (ra_logf) fclose(ra_logf);
     }
     if (on_3ds) {
-        ra_twl_restore();  // the user's autorun settings back
+        ra_twl_restore();       // the user's autorun settings back
+        ra_twl_stop_autorun();  // and never left pointing at us
         iprintf("\nBack to TWiLight Menu++\n");
     } else {
         iprintf("\nBack to %s\n", next);

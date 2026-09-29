@@ -98,8 +98,13 @@ int ra_read_line(const char *path, int n, char *out, size_t size) {
     out[0] = '\0';
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
-    int ok = 0;
-    for (int i = 0; i <= n; i++) ok = fgets(out, size, f) != NULL;
+    // Skip whole lines whatever out's size (fgets into a small buffer would
+    // count a long line as several: a 3DS start once lost its "3ds" mark)
+    int c = 0;
+    for (int i = 0; i < n && c != EOF; i++) {
+        while ((c = fgetc(f)) != EOF && c != '\n') {}
+    }
+    int ok = c != EOF && fgets(out, size, f) != NULL;
     fclose(f);
     if (!ok) out[0] = '\0';
     out[strcspn(out, "\r\n")] = '\0';

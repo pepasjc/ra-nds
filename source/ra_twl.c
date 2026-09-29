@@ -158,6 +158,29 @@ void ra_twl_restore(void) {
     if (count && set_values(names, value_ptrs, count) == 0) remove(TWL_RESTORE);
 }
 
+int ra_twl_autorun_is_ours(void) {
+    char *text = read_all(TWL_SETTINGS, NULL);
+    if (!text) return 0;
+    char autorun[8], rom[300];
+    get_value(text, "AUTORUNGAME", autorun, sizeof(autorun));
+    get_value(text, "ROM_PATH", rom, sizeof(rom));
+    free(text);
+    return !strcmp(autorun, "1") && strstr(rom, "/_nds/ra/") != NULL;
+}
+
+int ra_twl_pending(void) {
+    FILE *f = fopen(TWL_RESTORE, "rb");
+    if (f) fclose(f);
+    return f != NULL || ra_twl_autorun_is_ours();
+}
+
+void ra_twl_stop_autorun(void) {
+    if (!ra_twl_autorun_is_ours()) return;
+    const char *name[1] = { "AUTORUNGAME" };
+    const char *value[1] = { "0" };
+    set_values(name, value, 1);
+}
+
 int ra_twl_reboot_target(void) {
     u32 id[2] = {0, 0};
     FILE *f = fopen(TWL_TITLE_ID, "rb");
