@@ -8,7 +8,7 @@
 #define RA_NETBLOB_H
 
 #define RA_NET_BLOB_MAGIC   0x544E4152 // 'RANT'
-#define RA_NET_BLOB_VERSION 2
+#define RA_NET_BLOB_VERSION 3
 
 // Where the card engine puts it: nds-bootstrap-ra's RA region (0x0CE00000,
 // the DSi's extra RAM through the 0x0C000000 mirror) + 512KB.  The blob
@@ -39,6 +39,7 @@ struct RaNetConfig {
 	char user[RA_NET_USER_MAX];
 	char token[RA_NET_TOKEN_MAX];
 	char md5[33];                    // the game's hash
+	u32 gameId;                      // RA's id for the game
 };
 
 enum RaNetState {
@@ -82,6 +83,10 @@ struct RaNetHeader {
 	// The in-game menu's switch: 0 turns WiFi off and keeps it off (awards
 	// are refused); 1 lets it come up again
 	void (*enable)(int on);
+	// The account's unlocks for the game (asked once connected, so that
+	// ones earned on another console don't pop up again): nonzero once, when
+	// they have arrived; *ids stays valid until the next init
+	int (*accountUnlocks)(const u32** ids, u32* count);
 };
 
 #endif

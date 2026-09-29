@@ -75,7 +75,14 @@ static u32 s_stoppedAt;     // ticks when the last session ended
 static bool s_everStopped;
 static bool s_disabled;     // the in-game menu turned it off (enable())
 static char s_body[512];
-static char s_reply[1024];
+static char s_reply[4096];
+
+// The account's unlocks for the game (accountUnlocks()), fetched once per
+// init when connected and nothing is waiting to be sent
+#define UNLOCKS_MAX 512
+static u32 s_unlockIds[UNLOCKS_MAX];
+static u32 s_unlockCount;
+static enum { FETCH_TODO, FETCH_BUSY, FETCH_READY, FETCH_TAKEN, FETCH_FAILED } s_fetch;
 
 static u32 append(char* buf, u32 at, u32 size, const char* text)
 {
@@ -160,6 +167,39 @@ static void buildAward(const Award* a)
 	append(s_body, at, sizeof(s_body), sig);
 }
 
+// rcheevos' rc_api_init_fetch_user_unlocks_request(): softcore unlocks
+static void buildUnlocks(void)
+{
+	char n[12];
+	u32 at = 0;
+	at = append(s_body, at, sizeof(s_body), "r=unlocks&u=");
+	at = appendEncoded(s_body, at, sizeof(s_body), s_config.user);
+	at = append(s_body, at, sizeof(s_body), "&t=");
+	at = appendEncoded(s_body, at, sizeof(s_body), s_config.token);
+	at = append(s_body, at, sizeof(s_body), "&g=");
+	at = append(s_body, at, sizeof(s_body), utoa10(s_config.gameId, n));
+	append(s_body, at, sizeof(s_body), "&h=0");
+}
+
+// {"Success":true,...,"UserUnlocks":[1,2,3]}
+static bool parseUnlocks(int status)
+{
+	const char* body = status == 200 ? strstr(s_reply, "\r\n\r\n") : NULL;
+	const char* list = body ? strstr(body, "\"UserUnlocks\":[") : NULL;
+	if (!list || !strstr(body, "\"Success\":true")) return false;
+	s_unlockCount = 0;
+	for (const char* p = list + 15; *p && *p != ']' && s_unlockCount < UNLOCKS_MAX; ) {
+		if (*p >= '0' && *p <= '9') {
+			u32 v = 0;
+			while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+			s_unlockIds[s_unlockCount++] = v;
+		} else {
+			p++;
+		}
+	}
+	return true;
+}
+
 // RA's answer: {"Success":true,...}, or false with "User already has ..."
 // when it was sent before (as rc_api treats it)
 static u32 judge(int status)
@@ -232,11 +272,23 @@ static void sessionStart(void)
 	dietPrint(s_session ? "[blob] WiFi on\n" : "[blob] can't start\n");
 }
 
+// The WiFi LED (MCU register 0x30, bit 0) on while connected, as the DSi
+// shows WiFi in use (nds-bootstrap turns it off for DS games)
+static bool s_ledOn;
+static void wifiLed(bool on)
+{
+	if (s_ledOn == on) return;
+	s_ledOn = on;
+	u8 reg = ranetHostI2cRead(0x4A, 0x30);
+	ranetHostI2cWrite(0x4A, 0x30, on ? (reg | 1) : (reg & ~1));
+}
+
 static void sessionPoll(void)
 {
 	if (s_session == SESSION_STOPPING) {
 		ranetPoll();
 		if (ranetStopped()) {
+			wifiLed(false);
 			*(vu16*)0x04004C04 = s_gpioWl;
 			s_session = SESSION_OFF;
 			s_stoppedAt = ranetHostTicks();
@@ -252,15 +304,26 @@ static void sessionPoll(void)
 	}
 	ranetPoll();
 	RanetState st = ranetGetState();
+	if (st == RanetState_Online || st == RanetState_Busy) wifiLed(true);
 	if (s_busy) {
 		int status = 0;
 		if (ranetRequestDone(&status)) {
-			Award* a = &s_queue[s_sending % QUEUE_MAX];
-			a->result = judge(status);
-			dietPrint("[blob] award %lu: %s\n", (unsigned long)a->id, a->result == RA_AWARD_SENT ? "sent" : "failed");
-			s_sending ++;
+			if (s_fetch == FETCH_BUSY) {
+				const bool ok = parseUnlocks(status);
+				s_fetch = ok ? FETCH_READY : FETCH_FAILED;
+				dietPrint("[blob] account unlocks: %s (%lu)\n", ok ? "ok" : "failed", (unsigned long)s_unlockCount);
+			} else {
+				Award* a = &s_queue[s_sending % QUEUE_MAX];
+				a->result = judge(status);
+				dietPrint("[blob] award %lu: %s\n", (unsigned long)a->id, a->result == RA_AWARD_SENT ? "sent" : "failed");
+				s_sending ++;
+			}
 			s_busy = false;
 		}
+	} else if (s_fetch == FETCH_TODO && s_sending == s_queued && st == RanetState_Online && s_config.gameId) {
+		buildUnlocks();
+		s_busy = ranetRequest("/dorequest.php", s_body, s_reply, sizeof(s_reply));
+		if (s_busy) s_fetch = FETCH_BUSY;
 	} else if (s_sending < s_queued) {
 		if (st == RanetState_Failed) {
 			// Everything waiting goes to RA Sync
@@ -333,6 +396,15 @@ static int blobStopped(void)
 	return s_session == SESSION_OFF;
 }
 
+static int blobAccountUnlocks(const u32** ids, u32* count)
+{
+	if (s_fetch != FETCH_READY) return 0;
+	s_fetch = FETCH_TAKEN;
+	*ids = s_unlockIds;
+	*count = s_unlockCount;
+	return 1;
+}
+
 static void blobEnable(int on)
 {
 	if (on) {
@@ -367,4 +439,5 @@ const struct RaNetHeader ranetHeader = {
 	.stop = blobStop,
 	.stopped = blobStopped,
 	.enable = blobEnable,
+	.accountUnlocks = blobAccountUnlocks,
 };
