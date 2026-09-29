@@ -2,12 +2,16 @@
 // include/ra_client.h.
 #include <nds.h>
 #include <dswifi9.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <wfc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "https.h"
 #include "ra_client.h"
+#include "ra_netprofile.h"
 #include "raset.h"
 
 #include "rc_api_runtime.h"
@@ -94,10 +98,59 @@ int ra_wifi_connect(int attempts) {
     }
     if (wifi_state == 1) {
         iprintf(" WiFi up\n");
+        ra_net_profile_save();
         return 1;
     }
     if (wifi_state == 0) iprintf("\x1b[33mWiFi didn't come up\x1b[39m\n");
     return 0;
+}
+
+// sd:/_nds/ra/net.bin for nds-bootstrap-ra's in-game sending (see
+// include/ra_netprofile.h): the access point in use, the DHCP lease and
+// the server's address.  Nothing secret: the key stays in NVRAM.
+void ra_net_profile_save(void) {
+    WfcConnSlot *slot = wfcGetActiveSlot();
+    if (!slot) return;
+    RaNetProfile p;
+    memset(&p, 0, sizeof(p));
+    p.magic = RA_NET_PROFILE_MAGIC;
+    p.version = RA_NET_PROFILE_VERSION;
+    p.size = sizeof(p);
+    p.conn_type = slot->conn_type;
+
+    // The strongest scanned access point with the slot's SSID
+    unsigned count = 0;
+    WlanBssDesc *list = wfcGetScanBssList(&count);
+    const WlanBssDesc *bss = NULL;
+    for (unsigned i = 0; list && i < count; i++) {
+        if (list[i].ssid_len == slot->ssid_len && !memcmp(list[i].ssid, slot->ssid, slot->ssid_len)
+         && (!bss || list[i].rssi > bss->rssi)) bss = &list[i];
+    }
+    if (!bss) return;
+    memcpy(p.bssid, bss->bssid, sizeof(p.bssid));
+    p.ssid_len = bss->ssid_len;
+    memcpy(p.ssid, bss->ssid, sizeof(p.ssid));
+    p.ieee_caps = bss->ieee_caps;
+    p.ieee_basic_rates = bss->ieee_basic_rates;
+    p.ieee_all_rates = bss->ieee_all_rates;
+    p.auth_type = bss->auth_type;
+    p.channel = bss->channel;
+    p.rssi = bss->rssi;
+
+    struct in_addr gateway, netmask, dns1, dns2;
+    struct in_addr ip = wfcGetIPConfig(&gateway, &netmask, &dns1, &dns2);
+    p.ip = ip.s_addr;
+    p.netmask = netmask.s_addr;
+    p.gateway = gateway.s_addr;
+    p.dns[0] = dns1.s_addr;
+    p.dns[1] = dns2.s_addr;
+    struct hostent *he = gethostbyname(RA_HOST);
+    if (he && he->h_addrtype == AF_INET && he->h_addr_list[0]) memcpy(&p.ra_server, he->h_addr_list[0], 4);
+
+    FILE *f = fopen(RA_NET_PROFILE_FILE, "wb");
+    if (!f) return;
+    fwrite(&p, 1, sizeof(p), f);
+    fclose(f);
 }
 
 int ra_wifi_hung(void) {

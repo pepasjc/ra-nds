@@ -42,6 +42,12 @@ int ra_wifi_connect(int attempts);
 // The WiFi driver is still stuck in its bring-up (connect gave up on it)
 int ra_wifi_hung(void);
 
+// Saves RA_NET_PROFILE_FILE (include/ra_netprofile.h) for the connection
+// just made; ra_wifi_connect() does it when the WiFi comes up
+#define RA_HOST "retroachievements.org"
+#define RA_NET_PROFILE_FILE RA_DIR "/net.bin"
+void ra_net_profile_save(void);
+
 // Logs in with the token: checks it and prints the user's score.  0 on success.
 int ra_login(const ra_account *account);
 
