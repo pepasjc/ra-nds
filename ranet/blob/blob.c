@@ -4,6 +4,7 @@
 // rcheevos' rc_api_init_award_achievement_request() builds.
 #include <calico/types.h>
 #include <calico/system/dietprint.h>
+#include <calico/nds/lcd.h>
 #include <string.h>
 #include "ranet.h"
 #include "ranet_host.h"
@@ -355,11 +356,28 @@ static void blobPoll(void)
 	const u32 now = ranetHostTicks();
 	const bool idle = s_session == SESSION_ON && !s_busy && s_sending == s_queued
 		&& ranetGetState() == RanetState_Online;
-	if (idle && now - lastRun < 8753) return; // one frame
+	if (idle && now - lastRun < 4 * 8753) return; // every 4 frames
 	lastRun = now;
 	inPoll = true;
+	const u32 line0 = lcdGetVCount();
 	sessionPoll();
+	const u32 line1 = lcdGetVCount();
 	inPoll = false;
+
+	// Stats every 30 s while connected: what the network costs the game
+	extern u32 g_ranetRxPackets, g_ranetRxDropped;
+	static u32 polls, lines, lastStats;
+	polls ++;
+	lines += (line1 + 263 - line0) % 263;
+	if (s_session == SESSION_ON && now - lastStats > 30u * TICKS_PER_SECOND) {
+		if (lastStats) {
+			dietPrint("[stat] 30s: %lu polls, %lu lines, rx %lu (%lu dropped)\n", (unsigned long)polls,
+				(unsigned long)lines, (unsigned long)g_ranetRxPackets, (unsigned long)g_ranetRxDropped);
+		}
+		lastStats = now;
+		polls = lines = 0;
+		g_ranetRxPackets = g_ranetRxDropped = 0;
+	}
 }
 
 static int blobResult(u32* seq, u32* result)

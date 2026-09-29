@@ -22,4 +22,8 @@ bool twlwifiDisassociate(void);
 
 bool twlwifiTx(NetBuf* pPacket);
 
+#ifdef RANET
+bool twlwifiSetPowerSave(bool on); // ranet
+#endif
+
 MK_EXTERN_C_END

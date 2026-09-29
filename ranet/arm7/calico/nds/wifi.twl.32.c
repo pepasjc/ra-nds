@@ -686,6 +686,15 @@ bool twlwifiDisassociate(void)
 	return true;
 }
 
+#ifdef RANET
+// ranet: power save while connected and idle (the chip sleeps between
+// beacons), full performance to join
+bool twlwifiSetPowerSave(bool on)
+{
+	return ar6kWmiSetPowerMode(&s_ar6kDev, on ? Ar6kWmiPowerMode_Recommended : Ar6kWmiPowerMode_MaxPerformance);
+}
+#endif
+
 bool twlwifiTx(NetBuf* pPacket)
 {
 	bool rc = ar6kWmiTx(&s_ar6kDev, pPacket);

@@ -208,8 +208,29 @@ static int ifaceSend(sgIP_Hub_HWInterface* hw, sgIP_memblock* mb)
 }
 
 // From the driver (weak in wifi.twl.32.c): a received Ethernet frame
+// Received-packet counts (the stats line)
+u32 g_ranetRxPackets, g_ranetRxDropped;
+
+// Only what concerns us goes on to sgIP: ARP, and IPv4 sent to our MAC.
+// A home network's multicast and broadcast chatter (mDNS, SSDP, ...) is
+// freed at once: all of it costs ARM7 time the game needs.
+static bool wanted(NetBuf* pkt)
+{
+	if (pkt->len < sizeof(NetMacHdr)) return false;
+	const NetMacHdr* h = (const NetMacHdr*)netbufGet(pkt);
+	const unsigned type = __builtin_bswap16(h->len_or_ethertype_be);
+	if (type == NetEtherType_ARP) return true;
+	return type == NetEtherType_IPv4 && !memcmp(h->dst_mac, g_ranetEnv.wlmgr_macaddr, 6);
+}
+
 void _netbufRx(NetBuf* pkt)
 {
+	g_ranetRxPackets ++;
+	if (!wanted(pkt)) {
+		g_ranetRxDropped ++;
+		netbufFree(pkt);
+		return;
+	}
 	sgIP_memblock* mb = s_iface ? sgIP_memblock_alloc(2 + pkt->len) : NULL;
 	if (mb) {
 		sgIP_memblock_exposeheader(mb, -2);
@@ -480,6 +501,10 @@ static bool netSession(void)
 	}
 	memset(&s_auth, 0, sizeof(s_auth));
 	dietPrint("[net] joined in %lu ms\n", ms() - t0);
+	// Power save from here on: the chip sleeps between beacons (a request
+	// waits a beacon or two for its answer; nobody sees that in the
+	// background, the game sees far fewer interruptions)
+	twlwifiSetPowerSave(true);
 
 	// IP: RA Sync's DHCP lease
 	SGIP_INTR_PROTECT();
@@ -500,7 +525,7 @@ static bool netSession(void)
 	s_state = RanetState_Online;
 
 	for (;;) {
-		while (!s_reqPending && !s_stop) threadSleep(20000);
+		while (!s_reqPending && !s_stop) threadSleep(100000);
 		if (s_stop) break;
 		s_state = RanetState_Busy;
 		s_httpStatus = httpExchange();
