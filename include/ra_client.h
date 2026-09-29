@@ -42,6 +42,10 @@ int ra_wifi_connect(int attempts);
 // The WiFi driver is still stuck in its bring-up (connect gave up on it)
 int ra_wifi_hung(void);
 
+// Lets ra_wifi_connect() try again after a try that failed (not one that
+// hung: that needs a restart)
+void ra_wifi_allow_retry(void);
+
 // Saves RA_NET_PROFILE_FILE (include/ra_netprofile.h) for the connection
 // just made; ra_wifi_connect() does it when the WiFi comes up
 #define RA_HOST "retroachievements.org"

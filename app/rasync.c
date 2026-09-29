@@ -113,15 +113,31 @@ static void prep(const ra_account *account, int have_account) {
 
     // Real-time upload (nds-bootstrap-ra's in-game sending): going online
     // saves the WiFi profile (net.bin) and a fresh TLS session (tls.bin).
-    // The attempt is noted so that without WiFi the loader doesn't ask again
-    // for a while.
+    // Without a connection the player decides: try again, or play and let
+    // RA Sync send the unlocks on quit.
     if (!strcmp(net, "net") && have_account) {
-        char when[16];
-        snprintf(when, sizeof(when), "%lu", (unsigned long)time(NULL));
-        ra_write_text(RA_DIR "/net_tried.txt", when);
         SAY("Real-time upload: renewing\n");
-        if (!online) online = go_online();
-        if (online && ra_login(account) == 0) SAY("Real-time upload: ready\n");
+        for (;;) {
+            if (!online) online = go_online();
+            if (online && ra_login(account) == 0) {
+                SAY("Real-time upload: ready\n");
+                break;
+            }
+            SAY("\n\x1b[33mCouldn't connect for real-time\nupload.\x1b[39m\n A: try again\n B: play without it\n    (sent when you quit)\n");
+            u32 keys = 0;
+            do {
+                swiWaitForVBlank();
+                scanKeys();
+                keys = keysDown();
+            } while (!(keys & (KEY_A | KEY_B)));
+            if (keys & KEY_B) {
+                SAY("Playing without real-time upload\n");
+                break;
+            }
+            https_close();
+            online = 0;
+            ra_wifi_allow_retry();
+        }
     }
     // Online anyway: send whatever unlocks are still waiting (usually RA
     // Sync does on quit)

@@ -70,10 +70,16 @@ static int wifi_worker(void *arg) {
     return 0;
 }
 
+static int wifi_started;
+
+void ra_wifi_allow_retry(void) {
+    // Not while the last try is still stuck in the driver (that needs a restart)
+    if (wifi_state == -1 && !ra_wifi_hung()) wifi_started = 0;
+}
+
 int ra_wifi_connect(int attempts) {
-    static int started;
-    if (started) return wifi_state == 1;  // one try per run: a hung driver stays hung
-    started = 1;
+    if (wifi_started) return wifi_state == 1;  // one try per run: a hung driver stays hung
+    wifi_started = 1;
     wifi_attempts = attempts;
     wifi_state = 0;
     threadPrepare(&wifi_thread, wifi_worker, NULL, &wifi_stack[sizeof(wifi_stack)], MAIN_THREAD_PRIO + 1);
