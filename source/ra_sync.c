@@ -357,6 +357,48 @@ static void move_net_log(FILE *dump) {
     fwrite(head, sizeof(head), 1, dump);
 }
 
+// Unlocks nds-bootstrap-ra's in-game network stack already sent: the card
+// engine lists them as { seq, result } per ring slot after the ring;
+// moving the ring, their MACs go to sent_ingame.txt, and sending skips
+// them (as the loader's flushUnlocks does too)
+#define RA_DUMP_SENT_OFFSET 0x01FEC000
+#define RA_AWARD_SENT_INGAME 1
+#define RA_SENT_INGAME_FILE RA_DIR "/sent_ingame.txt"
+typedef struct { uint32_t seq, result; } RaNetSent;
+
+static void mac_hex(const RaSignedUnlock *u, char out[65]) {
+    for (int i = 0; i < 32; i++) snprintf(out + i * 2, 3, "%02x", u->mac[i]);
+}
+
+static void note_sent_ingame(FILE *dump, const RaSignedUnlock *moved, int count) {
+    static RaNetSent sent[RA_UNLOCK_RECORDS];
+    if (fseek(dump, RA_DUMP_SENT_OFFSET, SEEK_SET) != 0
+        || fread(sent, sizeof(RaNetSent), RA_UNLOCK_RECORDS, dump) != RA_UNLOCK_RECORDS) return;
+    FILE *f = NULL;
+    for (int i = 0; i < count; i++) {
+        const RaNetSent *s = &sent[moved[i].record.seq % RA_UNLOCK_RECORDS];
+        if (s->seq != moved[i].record.seq || s->result != RA_AWARD_SENT_INGAME) continue;
+        if (!f && !(f = fopen(RA_SENT_INGAME_FILE, "ab"))) return;
+        char hex[65];
+        mac_hex(&moved[i], hex);
+        fprintf(f, "%s\n", hex);
+    }
+    if (f) fclose(f);
+    memset(sent, 0, sizeof(sent));
+    fseek(dump, RA_DUMP_SENT_OFFSET, SEEK_SET);
+    fwrite(sent, sizeof(RaNetSent), RA_UNLOCK_RECORDS, dump);
+}
+
+static int sent_ingame(const RaSignedUnlock *u) {
+    char hex[65], line[80];
+    mac_hex(u, hex);
+    FILE *f = fopen(RA_SENT_INGAME_FILE, "rb");
+    int found = 0;
+    while (f && !found && fgets(line, sizeof(line), f)) found = !strncmp(line, hex, 64);
+    if (f) fclose(f);
+    return found;
+}
+
 int ra_move_ring(void) {
     FILE *dump = fopen(RA_RAMDUMP, "r+b");
     if (!dump) return 0;
@@ -390,6 +432,7 @@ int ra_move_ring(void) {
             }
             if (history && rejected) fprintf(history, "(%d records failed their signature check and were dropped)\n", rejected);
             if (history) fclose(history);
+            note_sent_ingame(dump, ring, valid);
             memset(ring, 0, ring_size);
             fseek(dump, RA_DUMP_UNLOCK_OFFSET, SEEK_SET);
             fwrite(ring, 1, ring_size, dump);
@@ -458,7 +501,18 @@ static long unlock_records(char first_mac[65]) {
 long ra_pending_unlocks(void) {
     char first_mac[65];
     long records = unlock_records(first_mac);
-    return records - load_sent(first_mac, records);
+    long done = load_sent(first_mac, records);
+    // Not the ones the game already sent
+    long pending = 0;
+    FILE *bin = fopen(RA_UNLOCKS_FILE, "rb");
+    RaSignedUnlock u;
+    if (bin && fseek(bin, done * (long)sizeof(RaSignedUnlock), SEEK_SET) == 0) {
+        while (fread(&u, sizeof(u), 1, bin) == 1) {
+            if (!sent_ingame(&u)) pending++;
+        }
+    }
+    if (bin) fclose(bin);
+    return pending;
 }
 
 void ra_send_unlocks(const ra_account *account) {
@@ -469,12 +523,14 @@ void ra_send_unlocks(const ra_account *account) {
     FILE *bin = fopen(RA_UNLOCKS_FILE, "rb");
     if (!bin) return;
     time_t now = time(NULL);
-    int sent = 0, already = 0, refused = 0, forged = 0, stopped = 0;
+    int sent = 0, already = 0, refused = 0, forged = 0, stopped = 0, ingame = 0;
     RaSignedUnlock u;
     fseek(bin, done * (long)sizeof(RaSignedUnlock), SEEK_SET);
     while (fread(&u, sizeof(u), 1, bin) == 1) {
         const RaUnlockRecord *r = &u.record;
-        if (!unlock_ok(&u)) {
+        if (sent_ingame(&u)) {
+            ingame++;
+        } else if (!unlock_ok(&u)) {
             forged++;
             ra_say("\x1b[31m%lu: bad signature, not sent\x1b[39m\n", (unsigned long)r->achievement_id);
         } else {
@@ -504,6 +560,7 @@ void ra_send_unlocks(const ra_account *account) {
     }
     fclose(bin);
     ra_say("\nSent %d, already %d, refused %d\n", sent, already, refused);
+    if (ingame) ra_say("%d sent during the game\n", ingame);
     if (forged) ra_say("%d with a bad signature skipped\n", forged);
     if (stopped) ra_say("The rest goes next time\n");
 }
