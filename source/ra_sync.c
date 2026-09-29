@@ -332,10 +332,39 @@ static int record_seq_compare(const void *a, const void *b) {
 // As nds-bootstrap-ra's flushUnlocks does at the next start: only records
 // that verify, with a line each in unlocks_history.txt; the ring is cleared
 // once they are in
+// nds-bootstrap-ra's in-game network log ('RANL', length, text, in
+// ramDump.bin after the unlock ring) to sd:/_nds/ra/ranet_log.txt, as its
+// loader does at the next start
+#define RA_DUMP_NETLOG_OFFSET 0x01FED000
+#define RA_NETLOG_SIZE 0x3000
+#define RA_NETLOG_MAGIC 0x4C4E4152
+static void move_net_log(FILE *dump) {
+    uint32_t head[2] = {0, 0};
+    if (fseek(dump, RA_DUMP_NETLOG_OFFSET, SEEK_SET) != 0 || fread(head, sizeof(head), 1, dump) != 1
+        || head[0] != RA_NETLOG_MAGIC || head[1] == 0 || head[1] > RA_NETLOG_SIZE - sizeof(head)) return;
+    char *text = malloc(head[1]);
+    if (text && fread(text, 1, head[1], dump) == head[1]) {
+        FILE *f = fopen(RA_DIR "/ranet_log.txt", "ab");
+        if (f) {
+            fputs("--- game (RA Sync)\n", f);
+            fwrite(text, 1, head[1], f);
+            fclose(f);
+        }
+    }
+    free(text);
+    head[0] = 0;
+    fseek(dump, RA_DUMP_NETLOG_OFFSET, SEEK_SET);
+    fwrite(head, sizeof(head), 1, dump);
+}
+
 int ra_move_ring(void) {
-    if (!have_key) return 0;  // can't check them: the ring stays
     FILE *dump = fopen(RA_RAMDUMP, "r+b");
     if (!dump) return 0;
+    move_net_log(dump);
+    if (!have_key) {  // can't check them: the ring stays
+        fclose(dump);
+        return 0;
+    }
     const size_t ring_size = RA_UNLOCK_RECORDS * sizeof(RaSignedUnlock);
     RaSignedUnlock *ring = malloc(ring_size);
     size_t got = 0;

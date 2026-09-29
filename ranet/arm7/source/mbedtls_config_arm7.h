@@ -6,8 +6,15 @@
 #ifndef MBEDTLS_CONFIG_ARM7_H
 #define MBEDTLS_CONFIG_ARM7_H
 
+#include <stddef.h>
+
 #define MBEDTLS_PLATFORM_C
 #define MBEDTLS_PLATFORM_MEMORY          // calloc/free from ranet's heap
+// ...from the start, so that newlib's malloc isn't linked (the blob has none)
+void* ranet_calloc(size_t n, size_t size);
+void ranet_free(void* ptr);
+#define MBEDTLS_PLATFORM_STD_CALLOC ranet_calloc
+#define MBEDTLS_PLATFORM_STD_FREE ranet_free
 #define MBEDTLS_NO_PLATFORM_ENTROPY
 #define MBEDTLS_ENTROPY_HARDWARE_ALT     // mbedtls_hardware_poll() in tls.c
 #define MBEDTLS_DEPRECATED_REMOVED

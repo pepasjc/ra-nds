@@ -410,6 +410,13 @@ static int netMain(void* arg)
 {
 	(void)arg;
 	s_state = RanetState_Starting;
+	// Debug: the hardware state the driver starts from (in-game vs menu)
+	dietPrint("[net] SCFG_EXT %08lx CLK %04x WL %04x GPIO_WL %04x POWCNT %04x\n",
+		(unsigned long)*(vu32*)0x04004008, *(vu16*)0x04004004, *(vu16*)0x04004020,
+		*(vu16*)0x04004C04, *(vu16*)0x04000304);
+	dietPrint("[net] MCU30 %02x MCU31 %02x TMIO1 portsel %04x clk %04x opt %04x\n",
+		ranetHostI2cRead(0x4A, 0x30), ranetHostI2cRead(0x4A, 0x31),
+		*(vu16*)0x04004A02, *(vu16*)0x04004A24, *(vu16*)0x04004A28);
 	u32 t0 = ms();
 	if (!twlwifiInit()) {
 		dietPrint("[net] WiFi driver failed\n");
@@ -510,9 +517,13 @@ static bool netSession(void)
 
 bool ranetStart(const RaNetProfile* profile, void* arena)
 {
-	if (s_state != RanetState_Off) return false;
+	// Off, or a session that has been stopped (then it starts over)
+	if (s_state != RanetState_Off && !s_stopped) return false;
 	if (profile->magic != RA_NET_PROFILE_MAGIC || profile->size != sizeof(RaNetProfile) || !profile->ra_server) return false;
 	memcpy(&s_profile, profile, sizeof(s_profile));
+	s_stop = s_stopped = false;
+	s_reqPending = s_reqDone = false;
+	s_iface = NULL;
 	// Arena: thread stacks, packet buffers, then sgIP's heap
 	u8* at = (u8*)arena;
 	coopInit(at, RANET_STACKS_SIZE);

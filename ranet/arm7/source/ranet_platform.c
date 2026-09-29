@@ -26,7 +26,13 @@ u64 tickGetCount(void)
 {
 	static u32 last, high;
 	u32 now = ranetHostTicks();
-	if (now < last) high ++;
+	if (now < last) {
+		// A real wrap goes from near the top to near zero; a small step
+		// back (a host counter read just before its interrupt caught up)
+		// is time standing still
+		if (last - now > 0x80000000u) high ++;
+		else now = last;
+	}
 	last = now;
 	return ((u64)high << 32) | now;
 }

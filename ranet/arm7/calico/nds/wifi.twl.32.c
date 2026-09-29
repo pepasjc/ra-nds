@@ -291,28 +291,39 @@ bool twlwifiInit(void)
 
 	// Ensure Atheros is selected and powered on
 	gpioSetWlModule(GpioWlModule_Atheros);
+	dietPrint("[TWLWIFI] module selected\n");
 	if (!_twlwifiGetWifiReset()) {
+		dietPrint("[TWLWIFI] releasing reset\n");
 		_twlwifiSetWifiReset(true);
 		threadSleep(1000);
 	}
+	dietPrint("[TWLWIFI] reset ok\n");
 
 	// Initialize TMIO host controller used for SDIO
 	if (!tmioInit(&s_sdioCtl, MM_IO + IO_TMIO1_BASE, MM_IO + IO_TMIO1_FIFO, s_sdioCtlBuf, sizeof(s_sdioCtlBuf)/sizeof(u32))) {
 		dietPrint("[TWLWIFI] TMIO init failed\n");
 		return false;
 	}
+	dietPrint("[TWLWIFI] TMIO ok\n");
 
 	threadPrepare(&s_sdioThread, (ThreadFunc)tmioThreadMain, &s_sdioCtl, &s_sdioThreadStack[sizeof(s_sdioThreadStack)], 0x10);
 	threadStart(&s_sdioThread);
 
 	irqSet2(IRQ2_TMIO1, _sdioIrqHandler);
+	// ranet: never enabled, only polled (ranetPollIrq2): a DS game's own
+	// interrupt handler doesn't know the DSi's second interrupt register,
+	// never acknowledges it, and a pending TMIO interrupt then keeps the
+	// ARM7 in its handler for good
+#ifndef RANET
 	irqEnable2(IRQ2_TMIO1);
+#endif
 
 	// Initialize the SDIO card interface
 	if (!sdioCardInit(&s_sdioCard, &s_sdioCtl, 0)) {
 		dietPrint("[TWLWIFI] SDIO init failed\n");
 		goto _tmioCleanup;
 	}
+	dietPrint("[TWLWIFI] SDIO ok\n");
 
 	// Initialize DMA for SDIO
 	// ranet: no NDMA (the host's card reads use it); CPU transfers instead

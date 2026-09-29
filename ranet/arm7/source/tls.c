@@ -20,7 +20,12 @@
 extern void* sgIP_malloc(int size);
 extern void sgIP_free(void* ptr);
 
-static void* tlsCalloc(size_t n, size_t size)
+void ranet_free(void* ptr)
+{
+	sgIP_free(ptr);
+}
+
+void* ranet_calloc(size_t n, size_t size)
 {
 	size_t total = n * size;
 	if (size && total / size != n) return NULL;
@@ -73,7 +78,7 @@ static int bioRecv(void* ctx, unsigned char* buf, size_t len)
 static bool setup(void)
 {
 	if (s_ready) return true;
-	mbedtls_platform_set_calloc_free(tlsCalloc, sgIP_free);
+	mbedtls_platform_set_calloc_free(ranet_calloc, ranet_free);
 	mbedtls_entropy_init(&s_entropy);
 	mbedtls_ctr_drbg_init(&s_drbg);
 	mbedtls_ssl_config_init(&s_conf);
@@ -111,7 +116,7 @@ int tlsOpen(void* rec, const RaTlsSession* saved, const char* host, u32 timeout_
 	memcpy(s.master, saved->master, sizeof(s.master));
 	s.encrypt_then_mac = saved->encrypt_then_mac;
 	s.mfl_code = saved->mfl_code;
-	s.ticket = (unsigned char*)tlsCalloc(1, saved->ticket_len);
+	s.ticket = (unsigned char*)ranet_calloc(1, saved->ticket_len);
 	if (s.ticket) {
 		memcpy(s.ticket, saved->ticket, saved->ticket_len);
 		s.ticket_len = saved->ticket_len;
